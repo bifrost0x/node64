@@ -1,6 +1,6 @@
 <?php
 /**
- * IPv64.net – CDN64 (srv07/srv08.cdn64.de): Uebersicht aller Namen, Modus 3 (direkt zum Ziel) anlegen und
+ * IPv64.net – CDN64 (srv07/srv08/srv09.cdn64.de): Uebersicht aller Namen, Modus 3 (direkt zum Ziel) anlegen und
  * verwalten, Modus 1/2 (Tunnel, eingerichtet in Node64) anzeigen und ausschalten. Die Seite ruft serverseitig die
  * API v2 (/cdn64o) mit dem Account-Key des angemeldeten Nutzers auf - Webseite, API und Node nutzen so dieselben
  * Pruefungen. Planung: docs/CDN64-ONLINE.md (Abschnitt 8.6) im Node64-Repo.
@@ -124,11 +124,11 @@ echo $info;
 <div class="row">
 	<div class="col-12 pb-3">
 		<div class="card">
-			<div class="card-header p-2"><i class="fa-solid fa-cloud-arrow-up text-primary"></i> CDN64 <small class="text-muted">srv07.cdn64.de (Nuremberg) · srv08.cdn64.de (Falkenstein)</small></div>
+			<div class="card-header p-2"><i class="fa-solid fa-cloud-arrow-up text-primary"></i> CDN64 <small class="text-muted">srv07.cdn64.de (Nuremberg) · srv08.cdn64.de (Falkenstein) · srv09.cdn64.de (Falkenstein) · <a href="/cdn64-server.php">Status</a></small></div>
 			<div class="card-body p-3 small">
-				<p class="mb-2">CDN64 makes your service reachable from the internet over IPv4 and IPv6 – also behind DS-Lite or without open ports. Built-in load balancing: visitors are spread across both servers (Nuremberg and Falkenstein) automatically, and if one server fails, the other one takes over.</p>
+				<p class="mb-2">CDN64 makes your service reachable from the internet over IPv4 and IPv6 – also behind DS-Lite or without open ports. Built-in load balancing: visitors are spread across all servers (Nuremberg and Falkenstein) automatically, and if one server fails, the others take over.</p>
 				<ul class="mb-2">
-					<li><b>Mode 1 / Mode 2 (recommended):</b> <a href="https://github.com/ipv64net/node64" target="_blank" rel="noopener">Node64</a> opens an encrypted tunnel from your network to both servers – no open ports, your IP stays hidden. Mode 1 keeps TLS end-to-end, mode 2 terminates TLS on the servers (protection and HTTP/3 there). Set it up with one click in Node64 (<i>PROXY64 › Proxy-Hosts › CDN64</i>).</li>
+					<li><b>Mode 1 / Mode 2 (recommended):</b> <a href="https://github.com/ipv64net/node64" target="_blank" rel="noopener">Node64</a> opens an encrypted tunnel from your network to all servers – no open ports, your IP stays hidden. Mode 1 keeps TLS end-to-end, mode 2 terminates TLS on the servers (protection and HTTP/3 there). Set it up with one click in Node64 (<i>PROXY64 › Proxy-Hosts › CDN64</i>).</li>
 					<li><b>Pause</b> (<i class="fa-solid fa-pause"></i>, all modes): the servers stop forwarding anything for the name at once, e.g. to protect yourself during an attack. DNS stays on the servers, so your own address is not revealed; settings and statistics stay.</li>
 					<li><b>Mode 3 (here):</b> without Node64 – the servers connect to your target directly (your DynDNS address or a fixed target). The target has to be reachable from the internet.</li>
 				</ul>
