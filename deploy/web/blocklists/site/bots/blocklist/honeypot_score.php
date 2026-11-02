@@ -14,8 +14,9 @@
  *     (Sensor-IP aus hp_reports.ip und hp_sensors.last_ip), bilden eine Gruppe und zaehlen einmal.
  *   - Vertrauen je Sensor 1.0, halbiert fuer Accounts juenger als 7 Tage und fuer Sensoren, deren IPs fast nie von
  *     anderen bestaetigt werden (mind. 50 IPs, unter 5 % auch von einer anderen Gruppe gemeldet, erst ab 3 Gruppen);
- *     0 fuer gesperrte Sensoren und inaktive/geloeschte Accounts. Eine Gruppe zaehlt je IP mit dem hoechsten
- *     Vertrauen ihrer meldenden Sensoren (0.25 bis 1).
+ *     0 fuer gesperrte Sensoren und inaktive/geloeschte Accounts. Anonyme Sensoren (ohne Key, userid 0) sind zusammen
+ *     ein Account mit halbem Vertrauen. Eine Gruppe zaehlt je IP mit dem hoechsten Vertrauen ihrer meldenden Sensoren
+ *     (0.125 bis 1).
  *   - Schwelle nach aktiven Accounts (Meldung in 7 Tagen): unter 20: 2 Accounts mit Login/Exploit oder 3 Accounts;
  *     20-200: 3; ueber 200: 2 %, mindestens 3, hoechstens 10 (jeweils gewichtete Accounts).
  *     scanner:research zaehlt getrennt (eigene Liste research, nie in der Hauptliste v64), Schwelle wie ohne Login/Exploit.
@@ -289,11 +290,13 @@ foreach(array_chunk($uids, HPS_CHUNK) as $chunk) {
 	foreach(hps_q("SELECT id, reg_date, account_status FROM users WHERE id IN (" . implode(',', array_fill(0, count($chunk), '?')) . ")", $chunk)->fetchAll(PDO::FETCH_ASSOC) as $x) { $users[(int)$x['id']] = $x; }
 }
 $disabled = array_fill_keys(hps_q("SELECT sensor_id FROM hp_sensors WHERE disabled = 1")->fetchAll(PDO::FETCH_COLUMN), true);
-$trust = array(); $lowTrust = array('new' => 0, 'unconfirmed' => 0, 'none' => 0);
+$trust = array(); $lowTrust = array('new' => 0, 'anonymous' => 0, 'unconfirmed' => 0, 'none' => 0);
 foreach($sensorUser as $s => $u) {
 	$x = $users[$u] ?? null;
+	if($u === 0 AND !isset($disabled[$s])) { $x = array('account_status' => '1', 'reg_date' => ''); } // anonym (ohne Key): ein Account, halbes Vertrauen
 	if($x === null OR (string)$x['account_status'] !== '1' OR isset($disabled[$s])) { $trust[$s] = 0.0; $lowTrust['none']++; continue; }
 	$t = 1.0;
+	if($u === 0) { $t *= 0.5; $lowTrust['anonymous']++; }
 	$reg = strtotime((string)$x['reg_date']);
 	if($reg !== false AND $reg > $now - HPS_NEW_ACCOUNT) { $t *= 0.5; $lowTrust['new']++; }
 	if(count($groupsAll) >= 3 AND ($total[$s] ?? 0) >= HPS_CONF_MIN AND ($conf[$s] ?? 0) / $total[$s] < HPS_CONF_RATE) { $t *= 0.5; $lowTrust['unconfirmed']++; }
@@ -457,7 +460,7 @@ foreach($out as $x) {
 }
 
 printf("Aktive Accounts (7 Tage): %d, Gruppen (14 Tage): %d, Schwelle: %s%s\n", $active, count($groupsAll), $T, $Tstrong !== null ? " bzw. $Tstrong mit Login/Exploit" : '');
-printf("Sensoren: %d, halbes Vertrauen neu: %d, wenig bestaetigt: %d, ohne Vertrauen: %d\n", count($trust), $lowTrust['new'], $lowTrust['unconfirmed'], $lowTrust['none']);
+printf("Sensoren: %d, halbes Vertrauen neu: %d, anonym: %d, wenig bestaetigt: %d, ohne Vertrauen: %d\n", count($trust), $lowTrust['new'], $lowTrust['anonymous'], $lowTrust['unconfirmed'], $lowTrust['none']);
 printf("IPs bewertet: %d, gelistet: %d (v64 %d, research %d), nicht gelistet trotz Schwelle: Kunde %d, Freigabe %d, Infrastruktur %d, CDN %d; uebersprungen: Sensor %d, nicht oeffentlich %d\n",
 	$stat['ips'], $stat['listed'], $stat['v64'], $stat['research'], $stat['customer_ip'], $stat['allowlist'], $stat['infra'], $stat['cdn'], $skipped['sensor'], $skipped['not_public']);
 if($soft) { echo "Unter der Schwelle als Infrastruktur/CDN gekennzeichnet (keine Fruehwarnung): " . count($soft) . "\n"; }

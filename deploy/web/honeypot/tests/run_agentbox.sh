@@ -15,8 +15,13 @@ trap 'rm -rf "$STAGE"' EXIT
 # Stubs fuer dbconnect/header/footer
 mkdir -p "$STAGE/hp2test/web/honeypot" "$STAGE/hp2test/web/bots" "$STAGE/hp2test/tests" "$STAGE/hp2test/sql"
 cat > "$STAGE/patch.py" <<'PY'
-import sys
+import re, sys
 s = open(sys.argv[1], encoding="utf-8").read().replace("\r\n", "\n")
+# neuere api_v2.php bindet die Teil-APIs selbst ein: nur Honeypot behalten, die anderen fehlen in der Testumgebung
+s = re.sub(r"^require __DIR__ \. '/api_v2_(?!honeypot\.php)[a-z0-9_]+\.php';.*$", "// (Test) ausgelassen", s, flags=re.M)
+if "require __DIR__ . '/api_v2_honeypot.php';" in s:
+    sys.stdout.write(s)
+    sys.exit(0)
 n = "// ===================================================================\n//  Start\n"
 p = s.rfind(n)
 assert p >= 0, "Start-Block nicht gefunden"

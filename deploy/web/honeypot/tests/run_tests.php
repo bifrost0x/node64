@@ -48,10 +48,10 @@ function report(?string $sensor = null, int $end = 0, ?callable $mod = null): ar
 	if($mod !== null) { $r = $mod($r); }
 	return $r;
 }
-function post(array $r, ?string $key = K1, array $headers = array(), bool $gzip = false): array {
+function post(array $r, ?string $key = K1, array $headers = array(), bool $gzip = false, string $ip = SENSOR_IP): array {
 	$b = json_encode($r, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 	if($gzip) { $b = gzencode($b); $headers[] = 'Content-Encoding: gzip'; }
-	return req('POST', '/api_v2.php/honeypot/reports', $b, $headers, $key);
+	return req('POST', '/api_v2.php/honeypot/reports', $b, $headers, $key, $ip);
 }
 function one(string $sql, array $p = array()) { global $db; $st = $db->prepare($sql); $st->execute($p); return $st->fetch(PDO::FETCH_ASSOC); }
 function all(string $sql, array $p = array()): array { global $db; $st = $db->prepare($sql); $st->execute($p); return $st->fetchAll(PDO::FETCH_ASSOC); }
@@ -218,6 +218,31 @@ $db->prepare("UPDATE hp_sensors SET disabled = 0 WHERE sensor_id = ?")->execute(
 $r = post(report($D, time() - 3), K1);
 check('Sensor zieht zu Account 1 um 202', $r['code'] === 202 AND (int)one("SELECT userid FROM hp_sensors WHERE sensor_id = ?", array($D))['userid'] === 1, code($r));
 
+// ---------------------------------------------------------------- anonym (ohne Key, Account 0)
+echo "Anonym\n";
+const ANON_IP = '84.200.7.7';
+$E = hp_uuid();
+$r = post(report($E), null, array(), true, ANON_IP);
+$e = one("SELECT userid, last_ip FROM hp_sensors WHERE sensor_id = ?", array($E));
+check('anonym 202, Sensor bei Account 0 mit IP', $r['code'] === 202 AND ($r['j']['data']['accepted'] ?? 0) > 0 AND (int)$e['userid'] === 0 AND $e['last_ip'] === ANON_IP, code($r));
+check('anonym: keine IP in hp_reports', one("SELECT ip FROM hp_reports WHERE sensor_id = ?", array($E))['ip'] === '');
+check('anonym: Quellen bei Account 0', (int)one("SELECT count(*) c FROM hp_report_sources WHERE sensor_id = ? AND userid = 0", array($E))['c'] > 0);
+$r = post(report(hp_uuid()), 'FalscherKey00000000000000000000x', array(), false, ANON_IP);
+check('falscher Key bleibt 401 (nicht anonym)', $r['code'] === 401, code($r));
+$r = post(report(hp_uuid()), null, array(), false, ANON_IP);
+$r = post(report(hp_uuid()), null, array(), false, ANON_IP);
+check('3. anonymer Sensor je IP 202', $r['code'] === 202, code($r));
+$r = post(report(hp_uuid()), null, array(), false, ANON_IP);
+check('4. anonymer Sensor je IP 403 sensor_limit', $r['code'] === 403 AND ($r['j']['code'] ?? '') === 'sensor_limit', code($r));
+$r = post(report(hp_uuid()), null, array(), false, '84.200.7.8');
+check('anonym von anderer IP 202', $r['code'] === 202, code($r));
+$r = req('GET', '/api_v2.php/honeypot/sensors', null, array(), null);
+check('GET sensors ohne Key weiter 401', $r['code'] === 401, code($r));
+$r = report(hp_uuid(), 0, function($r) { $r['sources'][0]['ip'] = '84.200.7.9'; return $r; });
+$db->prepare("UPDATE hp_sensors SET last_ip = '84.200.7.9' WHERE userid = 0 AND last_ip = '84.200.7.8'")->execute();
+$r = post($r, null, array(), false, '84.200.7.10');
+check('anonym: fremde anonyme Sensor-IP wird nicht als eigene verworfen', $r['code'] === 202 AND !isset($r['j']['data']['rejected_reasons']['own_ip']), code($r));
+
 // ---------------------------------------------------------------- GET
 echo "GET sensors/stats\n";
 $r = req('GET', '/api_v2.php/honeypot/sensors');
@@ -281,6 +306,11 @@ check('alte Quellen und Meldung geloescht', (int)one("SELECT count(*) c FROM hp_
 check('aktuelle Daten bleiben', (int)one("SELECT count(*) c FROM hp_report_sources")['c'] > 5000);
 shell_exec('cd ' . escapeshellarg($WEB . '/bots') . ' && php honeypot_cleanup.php 2>&1');
 check('zweiter Lauf zaehlt nichts doppelt', (int)one("SELECT events FROM hp_sources_archive WHERE day = ? AND family = 4", array($old))['events'] === 8);
+$db->exec("INSERT INTO hp_sensors (sensor_id, userid, first_seen, last_seen, last_ip) VALUES ('" . ($Fa = hp_uuid()) . "', 0, '$oldT', UTC_TIMESTAMP() - INTERVAL 31 DAY, '84.200.7.20'),
+	('" . ($Fb = hp_uuid()) . "', 0, '$oldT', UTC_TIMESTAMP() - INTERVAL 29 DAY, '84.200.7.21'), ('" . ($Fc = hp_uuid()) . "', 1, '$oldT', UTC_TIMESTAMP() - INTERVAL 31 DAY, '84.200.7.22')");
+shell_exec('cd ' . escapeshellarg($WEB . '/bots') . ' && php honeypot_cleanup.php 2>&1');
+$ips = array_column(all("SELECT sensor_id, last_ip FROM hp_sensors WHERE sensor_id IN (?, ?, ?)", array($Fa, $Fb, $Fc)), 'last_ip', 'sensor_id');
+check('anonym: IP nach 30 Tagen geloescht, juenger und mit Account bleibt', $ips[$Fa] === '' AND $ips[$Fb] === '84.200.7.21' AND $ips[$Fc] === '84.200.7.22', $ips);
 
 echo "\n$pass ok, $failed Fehler\n";
 exit($failed > 0 ? 1 : 0);

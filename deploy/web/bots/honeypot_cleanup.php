@@ -12,6 +12,7 @@
  *    ASN und Land fehlen noch (TODO H3: Anreicherung aus den RIR-Daten und einer freien ASN-Datenbank).
  * 2. hp_reports (enthaelt die IP des Sensors) aelter als 90 Tage loeschen.
  * 3. hp_sources_archive und hp_daily aelter als 24 Monate loeschen.
+ * 4. Anonyme Sensoren (ohne Key, userid 0): IP am Sensor nach 30 Tagen ohne Meldung loeschen.
  * Proben (hp_samples_*) bleiben unbegrenzt (keine personenbezogenen Daten).
  */
 if(php_sapi_name() !== 'cli') { exit; }
@@ -68,3 +69,12 @@ echo "hp_reports: " . hpc_delete('hp_reports', "day < :c", array('c' => $cut)) .
 echo "hp_sources_archive: " . hpc_delete('hp_sources_archive', "day < :c", array('c' => $cutArchive)) . " Zeile(n)\n";
 echo "hp_daily: " . hpc_delete('hp_daily', "day < :c", array('c' => $cutArchive)) . " Zeile(n)\n";
 echo "hp_archive_days: " . hpc_delete('hp_archive_days', "day < :c", array('c' => $cutArchive)) . " Zeile(n)\n";
+
+// 4. IP anonymer Sensoren (die Grenze je IP in api_v2_honeypot.php zaehlt nur 30 Tage)
+$anonCut = gmdate('Y-m-d H:i:s', time() - 30 * 86400);
+if($dry) { echo "hp_sensors anonym: " . (int)hpc_one("SELECT count(*) FROM hp_sensors WHERE userid = 0 AND last_ip != '' AND last_seen < :d", array('d' => $anonCut)) . " IP(s)\n"; }
+else {
+	$st = $pdo->prepare("UPDATE hp_sensors set last_ip = '' WHERE userid = 0 AND last_ip != '' AND last_seen < :d");
+	$st->execute(array('d' => $anonCut));
+	echo "hp_sensors anonym: " . $st->rowCount() . " IP(s)\n";
+}
