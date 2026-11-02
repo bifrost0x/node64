@@ -177,7 +177,9 @@ function hps_mask(string $b, int $len): string {
 /**
  * Deckung der v64 Blocklist (Live-Stand) mit den anderen Angreifer-Listen bei ipv64 (blocklisten.category attack und
  * botnet, auch die nicht in "all"; ohne Tor, Cloud, DoH, KI-Bots): wie viele IPs stehen auf mindestens einer davon
- * (als Adresse oder in einem Netz). Die uebrigen kennt nur Honeypot64. Je Praefixlaenge eine Hash-Menge der Netze.
+ * (als Adresse oder in einem Netz: die v64-Adresse wird auf jede vorkommende Praefixlaenge maskiert, eine /32 in einem
+ * /24 der anderen Liste zaehlt also als bekannt). Die uebrigen kennt nur Honeypot64. Je Praefixlaenge eine Hash-Menge
+ * der Netze; IPv4-gemappte Eintraege (::ffff:a.b.c.d/N) zaehlen als IPv4, /0 nie.
  */
 function hps_coverage(PDO $pdo): array {
 	$nets = array(); $names = array();
@@ -189,6 +191,11 @@ function hps_coverage(PDO $pdo): array {
 			$b = @inet_pton(trim($p[0], '[]'));
 			if($b === false OR (isset($p[1]) AND !ctype_digit($p[1]))) { continue; }
 			$len = min(isset($p[1]) ? (int)$p[1] : 128, strlen($b) * 8);
+			if(strlen($b) === 16 AND substr($b, 0, 12) === str_repeat("\0", 10) . "\xff\xff") { // ::ffff:a.b.c.d/N = IPv4 /N-96
+				if($len < 96) { continue; }
+				$b = substr($b, 12); $len -= 96;
+			}
+			if($len === 0) { continue; } // /0 waere „alles bekannt“
 			$nets[strlen($b)][$len][hps_mask($b, $len)] = true;
 		}
 	}
