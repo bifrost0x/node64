@@ -5,8 +5,9 @@
  * Tunnel zu den CDN64-Servern srv07/srv08.cdn64.de: Nodes melden Tunnel und Namen an (API-Key), die Server holen
  * ihre Konfiguration und melden Traffic (Server-Geheimnis). Eigene Tabellen cdn64o_* (deploy/sql/cdn64_online.sql),
  * nichts aus dem alten CDN wird geschrieben; das Kontingent (user_class.cdn_domains, cdn_traffic) teilen sich beide.
- * DNS: A/AAAA beider Server mit TTL 10 in subdomain_records (cdn_tmp = 3: von update.php und API geschuetzt),
- * vorhandene A/AAAA des Namens werden deaktiviert und beim Ausschalten wieder aktiviert.
+ * DNS: A/AAAA der Server des Accounts mit TTL 10 in subdomain_records (cdn_tmp = 3: von update.php und API geschuetzt),
+ * vorhandene A/AAAA des Namens werden deaktiviert und beim Ausschalten wieder aktiviert. Server je Account nach Klasse
+ * (c64o_user_edges, deploy/sql/cdn64_servers.sql); die Server selbst bekommen alle Tunnel und Namen.
  * Planung: docs/CDN64-ONLINE.md im Node64-Repo.
  */
 
@@ -36,6 +37,136 @@ function c64o_edges(bool $all = false): array {
 function c64o_edge_out(array $e): array {
 	$ips = array_values(array_filter(array($e['ipv6'], $e['ipv4'])));
 	return array('name' => $e['name'], 'host' => $e['hostname'], 'port' => (int)$e['tunnel_port'], 'ips' => $ips);
+}
+
+/** Klasse eines Accounts (user_class-Zeile, leer = unbekannt). */
+function c64o_class_of(int $u): array {
+	return q1("SELECT c.* FROM users u JOIN user_class c ON c.id = u.user_class WHERE u.id = :u", array('u' => $u)) ?? array();
+}
+
+/**
+ * Anzahl Server eines Accounts: user_class.cdn_edges = hoechstens so viele (0 = alle), cdn_edges_pick = 1: der Account
+ * waehlt 1 bis dahin (cdn64o_accounts.edges, 0 = hoechstens). Ohne Spalte (SQL noch nicht eingespielt): alle.
+ */
+function c64o_edges_max(array $class, int $total): int {
+	$max = (int)($class['cdn_edges'] ?? 0);
+	return $max <= 0 ? $total : min($max, $total);
+}
+
+function c64o_edges_count(int $u, array $class, int $total): int {
+	$max = c64o_edges_max($class, $total);
+	if((int)($class['cdn_edges_pick'] ?? 0) !== 1) { return $max; }
+	$w = (int)(q1("SELECT edges FROM cdn64o_accounts WHERE userid = :u", array('u' => $u))['edges'] ?? 0);
+	return $w > 0 ? min($w, $max) : $max;
+}
+
+/**
+ * $k Server aus $cands nacheinander: zuerst Standorte, die $have noch nicht hat (bzw. der Standort $prefer), dann die mit
+ * den wenigsten Accounts ($load: edge_id => Anzahl), dann nach Name.
+ */
+function c64o_edges_pick(array $cands, array $have, int $k, array $load, string $prefer = ''): array {
+	$out = array();
+	while(count($out) < $k AND $cands) {
+		$locs = array_column(array_merge($have, $out), 'location');
+		usort($cands, function($a, $b) use ($locs, $load, $prefer) {
+			$key = fn($e) => array($prefer !== '' ? (int)(($e['location'] ?? '') !== $prefer) : (int)in_array($e['location'] ?? '', $locs, true),
+				(int)($load[$e['id']] ?? 0), $e['name']);
+			return $key($a) <=> $key($b);
+		});
+		$out[] = array_shift($cands);
+	}
+	return $out;
+}
+
+/**
+ * Server eines Accounts fuer die Node (Tunnel) und das DNS (ohne ausgefallene). Zuteilung fest je Account
+ * (cdn64o_user_edges): je Standort zuerst einer, jeweils der mit den wenigsten Accounts; aendert sich die Anzahl
+ * (Klasse, Auswahl), kommen Server dazu bzw. fallen die zuletzt zugeteilten weg. Ist ein zugeteilter Server ausgefallen
+ * (withdrawn, G6) oder in Wartung (disabled), springt bis zu seiner Rueckkehr ein anderer ein (gleicher Standort zuerst).
+ * "Alle" (oder Tabellen fehlen): alle eingeschalteten Server wie bisher. Rueckgabe array('node' => [...], 'dns' => [...]).
+ */
+function c64o_user_edges(int $u): array {
+	if(isset($GLOBALS['c64o_ue'][$u])) { return $GLOBALS['c64o_ue'][$u]; }
+	if(!isset($GLOBALS['c64o_ue_all'])) { $GLOBALS['c64o_ue_all'] = c64o_edges(true); } // einmal je Aufruf (edge/config: alle Accounts)
+	$all = $GLOBALS['c64o_ue_all'];
+	$on = array_values(array_filter($all, fn($e) => (int)$e['disabled'] === 0));
+	$up = fn($e) => (int)$e['disabled'] === 0 && (int)($e['withdrawn'] ?? 0) === 0;
+	$node = $on;
+	$changed = false; // Zuteilung geaendert: das DNS der Namen muss nach (c64o_user_edges_settle)
+	try {
+		$n = c64o_edges_count($u, c64o_class_of($u), count($on));
+		if($n >= count($on)) {
+			$changed = q("DELETE FROM cdn64o_user_edges WHERE userid = :u", array('u' => $u))->rowCount() > 0;
+		} else {
+			$byId = array_column($all, null, 'id');
+			$mine = array();
+			foreach(qa("SELECT edge_id FROM cdn64o_user_edges WHERE userid = :u ORDER BY created_at, edge_id", array('u' => $u)) as $r) {
+				if(isset($byId[$r['edge_id']])) { $mine[] = $byId[$r['edge_id']]; }
+				else { q("DELETE FROM cdn64o_user_edges WHERE userid = :u AND edge_id = :e", array('u' => $u, 'e' => $r['edge_id'])); $changed = true; } // Server entfernt
+			}
+			if(count($mine) > $n) { // weniger: je Standort einer bleibt, dann die zuerst zugeteilten
+				$keep = array();
+				foreach($mine as $e) { if(count($keep) < $n AND !in_array($e['location'] ?? '', array_column($keep, 'location'), true)) { $keep[] = $e; } }
+				foreach($mine as $e) { if(count($keep) < $n AND !in_array($e, $keep, true)) { $keep[] = $e; } }
+				foreach($mine as $e) {
+					if(!in_array($e, $keep, true)) { q("DELETE FROM cdn64o_user_edges WHERE userid = :u AND edge_id = :e", array('u' => $u, 'e' => $e['id'])); }
+				}
+				$mine = $keep;
+				$changed = true;
+			}
+			// Last je Server: Accounts mit Namen oder Tunnel (verlassene Zuteilungen zaehlen nicht)
+			if(!isset($GLOBALS['c64o_ue_load'])) { $GLOBALS['c64o_ue_load'] = array_column(qa("SELECT ue.edge_id, COUNT(*) c FROM cdn64o_user_edges ue
+				WHERE EXISTS (SELECT 1 FROM cdn64o_hosts h WHERE h.userid = ue.userid) OR EXISTS (SELECT 1 FROM cdn64o_tunnels t WHERE t.userid = ue.userid) GROUP BY ue.edge_id"), 'c', 'edge_id'); }
+			$load = &$GLOBALS['c64o_ue_load'];
+			if(count($mine) < $n) { // mehr (oder neu): zuerst gesunde Server
+				$ids = array_column($mine, 'id');
+				$free = array_values(array_filter($on, fn($e) => !in_array($e['id'], $ids, true)));
+				$add = c64o_edges_pick(array_values(array_filter($free, $up)), $mine, $n - count($mine), $load);
+				$add = array_merge($add, c64o_edges_pick(array_values(array_filter($free, fn($e) => !$up($e))), array_merge($mine, $add), $n - count($mine) - count($add), $load));
+				foreach($add as $e) {
+					q("INSERT IGNORE INTO cdn64o_user_edges (userid, edge_id) VALUES (:u, :e)", array('u' => $u, 'e' => $e['id']));
+					$load[$e['id']] = (int)($load[$e['id']] ?? 0) + 1;
+				}
+				$mine = array_merge($mine, $add);
+				$changed = $changed || count($add) > 0;
+			}
+			$node = array();
+			$ids = array_column($mine, 'id');
+			foreach($mine as $e) {
+				if((int)$e['disabled'] === 0) { $node[] = $e; } // ausgefallen: Tunnel bleibt, die Node verbindet neu, sobald er zurueck ist
+				if($up($e)) { continue; }
+				$spare = array_values(array_filter($on, fn($x) => $up($x) && !in_array($x['id'], $ids, true) && !in_array($x, $node, true)));
+				foreach(c64o_edges_pick($spare, array(), 1, $load, (string)($e['location'] ?? '')) as $x) { $node[] = $x; }
+			}
+			if(!$node) { $node = $on; } // alle zugeteilten in Wartung und kein Ersatz
+		}
+	} catch(Throwable $ex) { $node = $on; } // Tabelle cdn64o_user_edges/cdn64o_accounts fehlt: alle wie bisher
+	usort($node, fn($a, $b) => $a['name'] <=> $b['name']);
+	$dns = array_values(array_filter($node, $up));
+	$GLOBALS['c64o_ue'][$u] = array('node' => $node, 'dns' => $dns ?: $node); // keiner da: Eintraege bleiben (wie G6)
+	if($changed) { $GLOBALS['c64o_ue_changed'][$u] = true; }
+	return $GLOBALS['c64o_ue'][$u];
+}
+
+/** Hat sich die Zuteilung des Accounts geaendert (Klasse, Auswahl), das DNS seiner Namen abgleichen. */
+function c64o_user_edges_settle(int $u): void {
+	c64o_user_edges($u);
+	if(empty($GLOBALS['c64o_ue_changed'][$u])) { return; }
+	unset($GLOBALS['c64o_ue_changed'][$u]);
+	c64o_dns_sync_all('servers_changed', '', $u);
+}
+
+/** Auswahl der Server eines Accounts (GET/PUT /cdn64o/servers, Uebersicht). */
+function c64o_servers_out(int $u, array $class): array {
+	$on = c64o_edges();
+	$max = c64o_edges_max($class, count($on));
+	$ue = c64o_user_edges($u);
+	$assigned = array();
+	try { $assigned = array_column(qa("SELECT e.name FROM cdn64o_user_edges ue JOIN cdn64o_edges e ON e.id = ue.edge_id WHERE ue.userid = :u ORDER BY e.name", array('u' => $u)), 'name'); }
+	catch(Throwable $ex) {}
+	return array('count' => count($assigned) ?: count($on), 'max' => $max, 'all' => (int)($class['cdn_edges'] ?? 0) <= 0, 'total' => count($on),
+		'selectable' => (int)($class['cdn_edges_pick'] ?? 0) === 1, 'assigned' => $assigned ?: array_column($on, 'name'),
+		'active' => array_column($ue['dns'], 'name'), 'edges' => array_map('c64o_edge_out', $ue['node']));
 }
 
 /** Kontingent des Accounts: altes und neues CDN zusammen (Domains, Traffic des Monats in MB), Bandbreite. */
@@ -77,7 +208,7 @@ function c64o_host_out(array $h): array {
 		FROM cdn64o_traffic WHERE host_id = :h AND day >= :d", array('h' => $h['id'], 'd' => date('Y-m-01')));
 	return array('id' => (int)$h['id'], 'fqdn' => $h['fqdn'], 'mode' => (int)$h['mode'], 'wildcard' => (int)$h['wildcard'] === 1, 'status' => $h['status'],
 		'blocked_reason' => $h['blocked_reason'] ?: null, 'paused' => (int)($h['paused'] ?? 0) === 1, 'paused_at' => iso($h['paused_at'] ?? null), 'error' => $h['error'] ?: null, 'tunnels' => $tun, 'domain_id' => (int)$h['subdomain_id'],
-		'edges' => array_map('c64o_edge_out', c64o_edges()), 'traffic_month' => array('bytes_in' => (int)$tr['i'], 'bytes_out' => (int)$tr['o'], 'conns' => (int)$tr['c'], 'requests' => (int)$tr['r'], 'rejected' => (int)$tr['x']),
+		'edges' => array_map('c64o_edge_out', c64o_user_edges((int)$h['userid'])['dns']), 'traffic_month' => array('bytes_in' => (int)$tr['i'], 'bytes_out' => (int)$tr['o'], 'conns' => (int)$tr['c'], 'requests' => (int)$tr['r'], 'rejected' => (int)$tr['x']),
 		'created_via' => $h['created_via'], 'created_at' => iso($h['created_at']), 'updated_at' => iso($h['updated_at']),
 		'target' => (int)$h['mode'] === 3 ? c64o_target_out((int)$h['id']) : null, 'acl' => c64o_acl_out($h),
 		'mappings' => c64o_mappings_out((int)$h['id']), 'waf' => (int)($h['waf'] ?? 1) === 1, 'ja4' => $h['ja4'] ?? 'block',
@@ -281,8 +412,7 @@ function c64o_dns_on(array $h, array $d): bool {
 		q("UPDATE subdomain_records set deactivated = 1 WHERE id = :i", array('i' => $r['id']));
 		q("INSERT INTO cdn64o_records (host_id, record_id, role) VALUES (:h, :r, 'original')", array('h' => $h['id'], 'r' => $r['id']));
 	}
-	foreach(c64o_edges() as $e) {
-		if((int)($e['withdrawn'] ?? 0) === 1) { continue; } // ausgefallen (G6): kommt beim Wiedereintrag dazu
+	foreach(c64o_user_edges($u)['dns'] as $e) { // die Server des Accounts (ohne ausgefallene, G6)
 		foreach(array('A' => $e['ipv4'], 'AAAA' => $e['ipv6']) as $type => $ip) {
 			if($ip === '') { continue; }
 			q("INSERT INTO subdomain_records (subdomain_id, userid, domainname, praefix, content, ttl, type, record_key, cdn_tmp) VALUES (:s, :u, :dn, :p, :c, :t, :ty, :k, :m)",
@@ -387,34 +517,80 @@ function c64o_edge_answers(array $e): bool {
 	return $ok;
 }
 
-/** Adressen eines Servers aus allen CDN64-Namen nehmen (false) bzw. wieder eintragen (true), an PowerDNS. */
+/** Server ausgefallen (false) bzw. wieder da (true): Kennzeichen setzen, DNS aller CDN64-Namen abgleichen. */
 function c64o_edge_dns(array $e, bool $on): void {
-	$ips = array_values(array_filter(array($e['ipv4'], $e['ipv6'])));
-	if(empty($ips)) { return; }
 	q("UPDATE cdn64o_edges set withdrawn = :w, back_since = NULL WHERE id = :i", array('w' => $on ? 0 : 1, 'i' => $e['id']));
-	$in = implode(',', array_map(fn($i) => $GLOBALS['pdo']->quote($i), $ips));
-	foreach(qa("SELECT * FROM cdn64o_hosts WHERE status IN ('active', 'blocked')") as $h) {
-		$sid = (int)$h['subdomain_id']; $u = (int)$h['userid']; $p = $h['praefix'];
-		if($on) {
-			$d = q1("SELECT * FROM subdomains WHERE id = :i", array('i' => $sid));
-			if($d === null) { continue; }
-			foreach(array('A' => $e['ipv4'], 'AAAA' => $e['ipv6']) as $type => $ip) {
-				if($ip === '' OR q1("SELECT id FROM subdomain_records WHERE subdomain_id = :s AND praefix = :p AND type = :t AND content = :c AND cdn_tmp = :m",
-					array('s' => $sid, 'p' => $p, 't' => $type, 'c' => $ip, 'm' => C64O_CDN_TMP)) !== null) { continue; }
+	unset($GLOBALS['c64o_ue'], $GLOBALS['c64o_ue_all']);
+	$n = c64o_dns_sync_all($on ? 'edge_back' : 'edge_down', $e['name']);
+	error_log("cdn64o: edge " . $e['name'] . ($on ? " back" : " withdrawn") . ", DNS of $n names changed");
+}
+
+/**
+ * A/AAAA eines Namens auf die Server des Accounts bringen (Soll c64o_user_edges dns, Ist = Server-Eintraege des Namens):
+ * fehlende eintragen, ueberzaehlige entfernen, nur geaenderte Typen an PowerDNS. Rueckgabe: null = unveraendert,
+ * true = geaendert, false = PowerDNS-Fehler (die Zeilen stehen schon, der naechste Abgleich schickt den Stand noch einmal).
+ */
+function c64o_dns_sync(array $h): ?bool {
+	$u = (int)$h['userid']; $sid = (int)$h['subdomain_id']; $p = $h['praefix'];
+	$want = array('A' => array(), 'AAAA' => array());
+	foreach(c64o_user_edges($u)['dns'] as $e) {
+		if($e['ipv4'] !== '') { $want['A'][$e['ipv4']] = true; }
+		if($e['ipv6'] !== '') { $want['AAAA'][$e['ipv6']] = true; }
+	}
+	$del = array(); $have = array('A' => array(), 'AAAA' => array());
+	foreach(qa("SELECT r.record_id, s.type, s.content FROM cdn64o_records r LEFT JOIN subdomain_records s ON s.id = r.record_id
+		WHERE r.host_id = :h AND r.role = 'edge'", array('h' => $h['id'])) as $r) {
+		if($r['type'] !== null AND isset($want[$r['type']][$r['content']]) AND !isset($have[$r['type']][$r['content']])) { $have[$r['type']][$r['content']] = true; continue; }
+		$del[] = $r; // anderer Server, doppelt oder Zeile fehlt
+	}
+	$add = array();
+	foreach($want as $t => $ips) { foreach(array_keys($ips) as $ip) { if(!isset($have[$t][$ip])) { $add[$t][] = $ip; } } }
+	if(!$del AND !$add) { return null; }
+	if($add) {
+		$d = q1("SELECT * FROM subdomains WHERE id = :i", array('i' => $sid));
+		if($d === null) { return false; }
+		foreach($add as $t => $ips) {
+			foreach($ips as $ip) {
 				q("INSERT INTO subdomain_records (subdomain_id, userid, domainname, praefix, content, ttl, type, record_key, cdn_tmp) VALUES (:s, :u, :dn, :p, :c, :t, :ty, :k, :m)",
-					array('s' => $sid, 'u' => $u, 'dn' => domain_name($d), 'p' => $p, 'c' => $ip, 't' => C64O_TTL, 'ty' => $type, 'k' => token32(), 'm' => C64O_CDN_TMP));
+					array('s' => $sid, 'u' => $u, 'dn' => domain_name($d), 'p' => $p, 'c' => $ip, 't' => C64O_TTL, 'ty' => $t, 'k' => token32(), 'm' => C64O_CDN_TMP));
 				q("INSERT INTO cdn64o_records (host_id, record_id, role) VALUES (:h, :r, 'edge')", array('h' => $h['id'], 'r' => $GLOBALS['pdo']->lastInsertId()));
 			}
-			foreach(array('A', 'AAAA') as $t) { c64o_zone($u, $sid, $t, $p, $h['fqdn']); }
-		} else {
-			// war dieser Server der letzte Eintrag eines Typs (anderer noch ausgetragen), entfernt c64o_edges_off das RRset
-			$recs = qa("SELECT r.record_id, s.type, s.content FROM cdn64o_records r JOIN subdomain_records s ON s.id = r.record_id
-				WHERE r.host_id = :h AND r.role = 'edge' AND s.cdn_tmp = :m AND s.content IN ($in)", array('h' => $h['id'], 'm' => C64O_CDN_TMP));
-			if(!c64o_edges_off($h, $recs, false)) { error_log("cdn64o: edge " . $e['name'] . " not withdrawn from DNS of " . $h['fqdn']); }
 		}
-		c64o_event((int)$h['id'], $u, $on ? 'edge_back' : 'edge_down', $e['name']);
 	}
-	error_log("cdn64o: edge " . $e['name'] . ($on ? " back in DNS" : " withdrawn from DNS"));
+	$ok = c64o_edges_off($h, $del, false); // entfernt und schickt die Typen mit Entfernten
+	foreach(array_keys($add) as $t) {
+		if(!in_array($t, array_column($del, 'type'), true) AND !c64o_zone($u, $sid, $t, $p, $h['fqdn'])) { $ok = false; }
+	}
+	return $ok;
+}
+
+/**
+ * DNS aller aktiven CDN64-Namen abgleichen ($u > 0: nur dieser Account); Ereignis $kind je geaendertem Namen (Text $msg,
+ * leer = die Server des Accounts); $secs > 0: nach so vielen Sekunden aufhoeren (der Rest beim naechsten Abgleich).
+ * Rueckgabe: Anzahl geaendert.
+ */
+function c64o_dns_sync_all(string $kind, string $msg = '', int $u = 0, int $secs = 0): int {
+	$n = 0; $t0 = time();
+	foreach(qa("SELECT * FROM cdn64o_hosts WHERE status IN ('active', 'blocked')" . ($u > 0 ? " AND userid = " . $u : "") . " ORDER BY id") as $h) {
+		if($secs > 0 AND time() - $t0 >= $secs) { break; }
+		$r = c64o_dns_sync($h);
+		if($r === null) { continue; }
+		if($r === false) { error_log("cdn64o: DNS of " . $h['fqdn'] . " not in sync with its servers"); }
+		c64o_event((int)$h['id'], (int)$h['userid'], $kind, $msg !== '' ? $msg : implode(', ', array_column(c64o_user_edges((int)$h['userid'])['dns'], 'name')));
+		$n++;
+	}
+	return $n;
+}
+
+/**
+ * Abgleich aller Namen hoechstens alle 10 Minuten (aus edge/config, hoechstens 15 s je Lauf): faengt Klassenwechsel, Server
+ * in Wartung (disabled) und neue Server auf, ohne dass das Portal davon erfaehrt. Zeitstempel in sys_get_temp_dir().
+ */
+function c64o_dns_sweep(): void {
+	$f = sys_get_temp_dir() . '/c64o_sweep';
+	if(is_file($f) AND filemtime($f) > time() - 600) { return; }
+	@touch($f);
+	c64o_dns_sync_all('servers_changed', '', 0, 15);
 }
 
 // ---------------------------------------------------------------- Nodes (API-Key)
@@ -422,9 +598,11 @@ function c64o_edge_dns(array $e, bool $on): void {
 route('GET', '/cdn64o', function() {
 	global $CLASS;
 	$u = uid();
+	c64o_user_edges_settle($u); // die Node fragt jede Minute: Klassenwechsel kommt so schnell ins DNS
 	ok(array(
 		'quota' => c64o_quota($u, $CLASS),
-		'edges' => array_map('c64o_edge_out', c64o_edges()),
+		'edges' => array_map('c64o_edge_out', c64o_user_edges($u)['node']), // die Server des Accounts (Klasse), die Node verbindet nur zu diesen
+		'servers' => c64o_servers_out($u, $CLASS),
 		'tunnels' => array_map('c64o_tunnel_out', qa("SELECT * FROM cdn64o_tunnels WHERE userid = :u ORDER BY created_at", array('u' => $u))),
 		'hosts' => array_map('c64o_host_out', qa("SELECT * FROM cdn64o_hosts WHERE userid = :u ORDER BY fqdn", array('u' => $u))),
 	));
@@ -444,7 +622,7 @@ route('POST', '/cdn64o/tunnels', function() {
 	add_log($pdo, $u, "0", "CDN64 online", "Tunnel $id angelegt ($name).");
 	$o = c64o_tunnel_out(c64o_find_tunnel($id));
 	$o['token'] = $tok;
-	$o['edges'] = array_map('c64o_edge_out', c64o_edges());
+	$o['edges'] = array_map('c64o_edge_out', c64o_user_edges(uid())['node']);
 	ok($o, 201);
 });
 
@@ -455,8 +633,29 @@ route('POST', '/cdn64o/tunnels/{id}/token', function($p) {
 	q("UPDATE cdn64o_tunnels set token_hash = :h WHERE id = :i", array('h' => hash('sha256', $tok), 'i' => $t['id']));
 	$o = c64o_tunnel_out(c64o_find_tunnel($t['id']));
 	$o['token'] = $tok;
-	$o['edges'] = array_map('c64o_edge_out', c64o_edges());
+	$o['edges'] = array_map('c64o_edge_out', c64o_user_edges(uid())['node']);
 	ok($o);
+});
+
+/**
+ * GET|PUT /cdn64o/servers {count}: CDN64-Server des Accounts. Free 1, Supporter 2, Business waehlt 1 bis 2, Company 1
+ * bis alle (count 0 = alle, auch kuenftige). Nach einer Aenderung gleicht ipv64 das DNS aller Namen ab, die Node baut
+ * ihre Tunnel binnen einer Minute zu den neuen Servern auf.
+ */
+route('GET', '/cdn64o/servers', function() { global $CLASS; c64o_user_edges_settle(uid()); ok(c64o_servers_out(uid(), $CLASS)); });
+route('PUT', '/cdn64o/servers', function() {
+	global $CLASS, $pdo;
+	$u = uid();
+	if((int)($CLASS['cdn_domains'] ?? 0) <= 0) { fail(403, 'plan_not_allowed', 'CDN64 online is not part of your plan.'); }
+	if((int)($CLASS['cdn_edges_pick'] ?? 0) !== 1) { fail(403, 'plan_not_allowed', 'The number of CDN64 servers is fixed for your plan.'); }
+	$total = count(c64o_edges());
+	$all = (int)($CLASS['cdn_edges'] ?? 0) <= 0;
+	$n = in_int('count', true, $all ? 0 : 1, $all ? max($total, 1) : c64o_edges_max($CLASS, $total));
+	if($all AND $n >= $total) { $n = 0; } // alle: auch kuenftige Server
+	q("INSERT INTO cdn64o_accounts (userid, edges) VALUES (:u, :n) ON DUPLICATE KEY UPDATE edges = VALUES(edges)", array('u' => $u, 'n' => $n));
+	c64o_user_edges_settle($u);
+	add_log($pdo, $u, "0", "CDN64 online", "Server: " . ($n ?: 'alle') . ".");
+	ok(c64o_servers_out($u, $CLASS));
 });
 
 /** Sperr- und Freigabeliste eines Tunnels (Node, PROXY64 Zugriffslisten). */
@@ -555,6 +754,7 @@ route('POST', '/cdn64o/hosts', function() {
 		fail(502, 'dns_update_failed', 'The DNS update failed. Nothing was changed, try again later.');
 	}
 	q("UPDATE cdn64o_hosts set status = 'active' WHERE id = :h", array('h' => $h['id']));
+	c64o_user_edges_settle($u); // erster Name: Zuteilung neu, die anderen Namen des Accounts ziehen nach
 	c64o_event((int)$h['id'], $u, 'enabled', "mode $mode" . ($t !== null ? ", tunnel " . $t['id'] : ", target " . ($target['target'] ?: 'records')));
 	add_log($pdo, $u, $d['id'], "CDN64 online", "CDN64 online fuer $fqdn eingeschaltet.");
 	ok(c64o_host_out(c64o_find_host((string)$h['id'])), 201);
@@ -740,7 +940,7 @@ route('GET', '/cdn64o/edge/config', function() {
 	$self = c64o_edge_auth();
 	$steady = $self['last_seen'] !== null && strtotime($self['last_seen']) >= time() - C64O_EDGE_STALE; // selbst ohne Pause da?
 	q("UPDATE cdn64o_edges set last_seen = NOW() WHERE id = :i", array('i' => $self['id'])); // Lebenszeichen alle 10 s (G6)
-	if($steady) { c64o_edge_watch(); }
+	if($steady) { c64o_edge_watch(); c64o_dns_sweep(); }
 	$tunnels = array();
 	$cls = array(); // Klasse je Account (parallele Verbindungen)
 	$lists = array(); // Sperr- und Freigabeliste je Tunnel
@@ -750,7 +950,8 @@ route('GET', '/cdn64o/edge/config', function() {
 	foreach(qa("SELECT id, userid, token_hash, status FROM cdn64o_tunnels ORDER BY id") as $t) {
 		$u = (int)$t['userid'];
 		if(!isset($cls[$u])) { $cls[$u] = q1("SELECT c.* FROM users u JOIN user_class c ON c.id = u.user_class WHERE u.id = :u", array('u' => $u)) ?? array(); }
-		$x = array('id' => $t['id'], 'token_sha256' => $t['token_hash'], 'userid' => $u, 'blocked' => $t['status'] !== 'active', 'sessions' => c64o_sessions($cls[$u]));
+		$x = array('id' => $t['id'], 'token_sha256' => $t['token_hash'], 'userid' => $u, 'blocked' => $t['status'] !== 'active', 'sessions' => c64o_sessions($cls[$u]),
+			'edges' => array_column(c64o_user_edges($u)['node'], 'name')); // Server des Accounts: ein Server ohne den Tunnel reicht zuerst an diese weiter
 		if(!empty($lists[$t['id']]['deny'])) { // Freigabeliste nur zusammen mit einer Sperrliste (sonst ohne Wirkung)
 			$x['deny'] = $lists[$t['id']]['deny'];
 			if(!empty($lists[$t['id']]['allow'])) { $x['allow'] = $lists[$t['id']]['allow']; }
@@ -950,12 +1151,13 @@ route('GET', '/plans', function() {
 			'offline_pages' => $i('offline_pages'),
 			'cdn_domains' => $i('cdn_domains'), 'cdn_traffic_gb' => $i('cdn_traffic'), 'cdn_bandwidth_mbit' => $z($c['cdn_bandwidth'] ?? 0), 'cdn_mappings' => $i('cdn_mappings'),
 			'cdn_tunnel_sessions' => isset($c['cdn_tunnel_sessions']) ? c64o_sessions($c) : null,
+			'cdn_edges' => $i('cdn_edges'), 'cdn_edges_selectable' => isset($c['cdn_edges_pick']) ? (int)$c['cdn_edges_pick'] === 1 : null, // Server je Account, 0 = alle
 			'cloud_routers' => $i('cloud_router'), 'vpn_gateways' => $i('vpn_gateways'), 'vpn_peers' => $i('vpn_peers'), 'vpn_traffic_gb' => $i('vpn_traffic'),
 			'dns64_clients' => $i('dns64_clients'),
 		);
 		if(isset($c['log_days'])) { $l['log_days'] = (int)$c['log_days']; } // fehlt eine Spalte, nimmt Node64 den eingebauten Wert
 		$out[] = array('id' => $id, 'key' => $p['key'], 'name' => $p['name'], 'class_name' => $c['name'], 'price_year_eur' => $p['price'],
-			'upgrade_url' => $p['upgrade'], 'limits' => (object)array_filter($l, fn($v, $k) => $v !== null || !in_array($k, array('dyndns_domains', 'own_domains', 'dyndns_ttl_s', 'healthchecks', 'failover_policies', 'failover_monitors', 'failover_rules', 'offline_pages', 'cdn_domains', 'cdn_traffic_gb', 'cdn_mappings', 'cdn_tunnel_sessions', 'cloud_routers', 'vpn_gateways', 'vpn_peers', 'vpn_traffic_gb', 'dns64_clients'), true), ARRAY_FILTER_USE_BOTH));
+			'upgrade_url' => $p['upgrade'], 'limits' => (object)array_filter($l, fn($v, $k) => $v !== null || !in_array($k, array('dyndns_domains', 'own_domains', 'dyndns_ttl_s', 'healthchecks', 'failover_policies', 'failover_monitors', 'failover_rules', 'offline_pages', 'cdn_domains', 'cdn_traffic_gb', 'cdn_mappings', 'cdn_tunnel_sessions', 'cdn_edges', 'cdn_edges_selectable', 'cloud_routers', 'vpn_gateways', 'vpn_peers', 'vpn_traffic_gb', 'dns64_clients'), true), ARRAY_FILTER_USE_BOTH));
 	}
 	header('Cache-Control: public, max-age=600');
 	ok($out);

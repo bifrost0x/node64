@@ -98,6 +98,10 @@ if($_SERVER['REQUEST_METHOD'] === 'POST') {
 				$info = $code === 200 ? c64w_alert('success', $act === 'pause' ? 'CDN64 paused for ' . $r['fqdn'] . ': the servers accept nothing for this name any more and close open connections within seconds. DNS stays on the servers, so your address stays hidden.'
 					: 'CDN64 resumed for ' . $r['fqdn'] . '.') : c64w_alert('danger', c64w_err($r));
 				break;
+			case 'servers': // Business/Company: Anzahl der Server (0 = alle)
+				[$code, $r] = c64w_api('PUT', '/cdn64o/servers', array('count' => (int)($_POST['count'] ?? 0)));
+				$info = $code === 200 ? c64w_alert('success', 'CDN64 servers: ' . implode(', ', $r['active']) . '. DNS of your names is updated, Node64 reconnects within a minute.') : c64w_alert('danger', c64w_err($r));
+				break;
 			case 'off':
 				[$code, $r] = c64w_api('DELETE', "/cdn64o/hosts/$id");
 				$info = $code === 204 ? c64w_alert('success', 'CDN64 switched off. DNS points to your previous address again.') : c64w_alert('danger', c64w_err($r));
@@ -126,9 +130,9 @@ echo $info;
 		<div class="card">
 			<div class="card-header p-2"><i class="fa-solid fa-cloud-arrow-up text-primary"></i> CDN64 <small class="text-muted">srv07.cdn64.de (Nuremberg) · srv08.cdn64.de (Falkenstein) · srv09.cdn64.de (Falkenstein) · srv10.cdn64.de (Nuremberg) · <a href="/cdn64-server.php">Status</a></small></div>
 			<div class="card-body p-3 small">
-				<p class="mb-2">CDN64 makes your service reachable from the internet over IPv4 and IPv6 – also behind DS-Lite or without open ports. Built-in load balancing: visitors are spread across all servers (Nuremberg and Falkenstein) automatically, and if one server fails, the others take over.</p>
+				<p class="mb-2">CDN64 makes your service reachable from the internet over IPv4 and IPv6 – also behind DS-Lite or without open ports. Your plan decides how many servers serve your names (Free 1, Supporter 2, Business 1–2, Company 1–all; one per location first, Nuremberg and Falkenstein). Visitors are spread across them, and if one fails, another server takes over until it is back.</p>
 				<ul class="mb-2">
-					<li><b>Mode 1 / Mode 2 (recommended):</b> <a href="https://github.com/ipv64net/node64" target="_blank" rel="noopener">Node64</a> opens an encrypted tunnel from your network to all servers – no open ports, your IP stays hidden. Mode 1 keeps TLS end-to-end, mode 2 terminates TLS on the servers (protection and HTTP/3 there). Set it up with one click in Node64 (<i>PROXY64 › Proxy-Hosts › CDN64</i>).</li>
+					<li><b>Mode 1 / Mode 2 (recommended):</b> <a href="https://github.com/ipv64net/node64" target="_blank" rel="noopener">Node64</a> opens an encrypted tunnel from your network to your servers – no open ports, your IP stays hidden. Mode 1 keeps TLS end-to-end, mode 2 terminates TLS on the servers (protection and HTTP/3 there). Set it up with one click in Node64 (<i>PROXY64 › Proxy-Hosts › CDN64</i>).</li>
 					<li><b>Pause</b> (<i class="fa-solid fa-pause"></i>, all modes): the servers stop forwarding anything for the name at once, e.g. to protect yourself during an attack. DNS stays on the servers, so your own address is not revealed; settings and statistics stay.</li>
 					<li><b>Mode 3 (here):</b> without Node64 – the servers connect to your target directly (your DynDNS address or a fixed target). The target has to be reachable from the internet.</li>
 				</ul>
@@ -143,6 +147,19 @@ echo $info;
 			<?php if((int)$q['bandwidth_mbit'] > 0) { echo ' · bandwidth up to ' . (int)$q['bandwidth_mbit'] . ' Mbit/s'; } ?>
 			· cache up to <?php echo (int)($accountclass['cdn_cache_size'] ?? 0); ?> MB per name
 			· port mappings <?php echo (int)($q['mappings']['used'] ?? 0); ?> of <?php echo (int)($q['mappings']['limit'] ?? 0); ?>
+			<?php $sv = $ov['servers'] ?? null; if($sv !== null) { // Server des Accounts (Klasse), Business/Company waehlen die Anzahl
+				echo '<br><b>Servers:</b> ' . c64w_h(implode(', ', $sv['active'])) . ($sv['assigned'] != $sv['active'] AND (int)$sv['count'] < (int)$sv['total'] ? ' <span class="text-muted">(assigned: ' . c64w_h(implode(', ', $sv['assigned'])) . ', one is standing in for a failed server)</span>' : '');
+				if($sv['selectable']) {
+					echo ' <form method="post" class="form-inline d-inline-flex ml-2"><input type="hidden" name="csrf" value="' . $csrf . '"><input type="hidden" name="action" value="servers">';
+					echo '<select name="count" class="custom-select custom-select-sm py-0" style="height:auto">';
+					for($i = 1; $i <= (int)$sv['max']; $i++) {
+						if($sv['all'] AND $i === (int)$sv['total']) { break; } // "all" statt der hoechsten Zahl
+						echo '<option value="' . $i . '"' . ((int)$sv['count'] === $i ? ' selected' : '') . '>' . $i . ' server' . ($i === 1 ? '' : 's') . '</option>';
+					}
+					if($sv['all']) { echo '<option value="0"' . ((int)$sv['count'] >= (int)$sv['total'] ? ' selected' : '') . '>all servers</option>'; }
+					echo '</select> <button class="btn btn-sm btn-outline-primary py-0 ml-1" type="submit">Save</button></form>';
+				}
+			} ?>
 		</div></div>
 	</div>
 <?php
