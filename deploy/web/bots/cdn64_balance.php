@@ -37,6 +37,15 @@ try { $q("SELECT 1 FROM cdn64o_balance LIMIT 1"); } catch(Throwable $e) { $say("
 $l = $pdo->query("SELECT GET_LOCK('cdn64_balance', 0) l")->fetch(PDO::FETCH_ASSOC);
 if((int)($l['l'] ?? 0) !== 1) { $say("laeuft bereits"); exit(0); }
 
+// Aufraeumen (nicht im Trockenlauf): Umzuege geloeschter Tunnel abbrechen (sonst blockiert die Zeile den Lastausgleich),
+// Zuteilungen und Verbindungsstand geloeschter Tunnel entfernen, alte Umzuege nach 7 Tagen loeschen (24 h fest, 1 h Sperre)
+if(!$dry) {
+	$q("UPDATE cdn64o_balance b LEFT JOIN cdn64o_tunnels t ON t.id = b.tunnel_id set b.state = 'aborted', b.done_at = NOW() WHERE b.state = 'moving' AND t.id IS NULL");
+	$q("DELETE a FROM cdn64o_edge_assign a LEFT JOIN cdn64o_tunnels t ON t.id = a.owner WHERE a.owner NOT LIKE 'u:%' AND t.id IS NULL");
+	$q("DELETE s FROM cdn64o_tunnel_seen s LEFT JOIN cdn64o_tunnels t ON t.id = s.tunnel_id WHERE t.id IS NULL OR s.seen_at < NOW() - INTERVAL 1 DAY");
+	$q("DELETE FROM cdn64o_balance WHERE state != 'moving' AND started_at < NOW() - INTERVAL 7 DAY");
+}
+
 $edges = $q("SELECT * FROM cdn64o_edges WHERE disabled = 0")->fetchAll(PDO::FETCH_ASSOC);
 foreach($edges as $e) { if((int)$e['withdrawn'] === 1) { $say("Failover aktiv (" . $e['name'] . "): kein Lastausgleich"); exit(0); } }
 if($q("SELECT id FROM cdn64o_balance WHERE state = 'moving' LIMIT 1")->fetch()) { $say("Umzug laeuft noch: kein weiterer"); exit(0); }

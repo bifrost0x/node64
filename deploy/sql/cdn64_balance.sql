@@ -40,5 +40,8 @@ CREATE TABLE IF NOT EXISTS `cdn64o_balance` (
   `done_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `tunnel_id` (`tunnel_id`),
-  KEY `started_at` (`started_at`)
+  KEY `started_at` (`started_at`),
+  KEY `state` (`state`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+-- state = 'moving' fragt edge/config bei jedem Abruf (Lastausgleich-Schritt)
+ALTER TABLE `cdn64o_balance` ADD INDEX IF NOT EXISTS `state` (`state`);

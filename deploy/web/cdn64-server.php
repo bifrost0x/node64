@@ -1,11 +1,11 @@
 <?php
 include("header.php");
 // CDN64-Server (cdn64o_edges): Online = Lebenszeichen in den letzten 60 Sekunden (die Server melden sich alle 10 s,
-// api_v2_cdn64o.php), disabled = Wartung. Standort nach Namen (die Tabelle hat keinen).
-$c64sLoc = array('srv07' => 'Nuremberg', 'srv08' => 'Falkenstein', 'srv09' => 'Falkenstein', 'srv10' => 'Nuremberg');
+// api_v2_cdn64o.php), disabled = Wartung. Standort aus cdn64o_edges.location (nbg/fsn, cdn64_servers.sql).
+$c64sLoc = array('fsn' => 'Falkenstein', 'nbg' => 'Nuremberg');
 $c64sH = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
 try {
-	$c64sRows = $pdo->query("SELECT name, hostname, ipv4, ipv6, disabled, version, last_seen, last_seen >= NOW() - INTERVAL 60 SECOND AS fresh FROM cdn64o_edges ORDER BY name")->fetchAll();
+	$c64sRows = $pdo->query("SELECT *, last_seen >= NOW() - INTERVAL 60 SECOND AS fresh FROM cdn64o_edges ORDER BY name")->fetchAll(); // *: location fehlt ohne SQL
 } catch (Throwable $e) { error_log('cdn64-server: ' . $e->getMessage()); $c64sRows = null; }
 ?>
 		 <div class="jumbotron jumbotron-fluid d-none d-xl-block pt-3 pb-3 mt-0">
@@ -32,7 +32,7 @@ try {
 							if ((int)$s['disabled'] === 1) { $status = '<span class="badge badge-dark">Maintenance mode</span> <i class="fa-solid fa-hammer text-info"></i>'; }
 							elseif ((int)$s['fresh'] === 1) { $status = '<span class="badge badge-success">Online</span> <i class="fa-solid fa-check-double text-success"></i>'; }
 							else { $status = '<span class="badge badge-warning">Offline</span> <i class="fa-solid fa-xmark text-danger"></i>'; }
-							$loc = $c64sLoc[$s['name']] ?? '';
+							$loc = $c64sLoc[$s['location'] ?? ''] ?? (string)($s['location'] ?? '');
 							echo '<tr>
 							<td class="p-2"><img src="img/country/de.svg" style="border:1px solid;height:18px;" alt="German flag">' . ($loc !== '' ? ' <span class="badge badge-dark">' . $c64sH($loc) . '</span>' : '') . '
 							<br><a href="https://hetzner.cloud/?ref=B7SA7EkDfqfL" target="_blank" rel="noopener"><img src="img/hetzner_logo.png" height="11" alt="Hetzner"></a>
