@@ -102,6 +102,14 @@ many(array(1, 10), '45.1.0.41', 'ssh:bruteforce');          // O2: inaktiver Acc
 many(array(0, 1), '45.1.0.42', 'ssh:bruteforce');           // R: anonym (Account 0) zaehlt halb -> nicht
 many(array(0, 1, 2), '45.1.0.43', 'ssh:bruteforce');        // R2: anonym bestaetigt zwei Accounts -> gelistet
 src(0, '45.1.0.44', 'ssh:bruteforce');                      // R3: nur anonym -> nicht
+// R4/R5: anonyme Sensoren ohne Sonderrechte - einer meldet von der Angreifer-IP 45.1.0.45 (nimmt sie nicht aus), zwei stehen in
+// den Netzen der Accounts 1 und 2 (verschmelzen sie nicht zu einer Gruppe)
+foreach(array(array('00000000-0000-4000-8000-a00000000001', '45.1.0.45'), array('00000000-0000-4000-8000-a00000000002', '84.200.1.20'),
+	array('00000000-0000-4000-8000-a00000000003', '84.200.2.20')) as [$asid, $aip]) {
+	x("INSERT INTO hp_sensors (sensor_id, userid, version, profile, mode, first_seen, last_seen, last_ip) VALUES (?, 0, '0.19.0', 'standard', 'module', ?, ?, ?)",
+		array($asid, dt(5), dt(0.01), $aip));
+}
+many(array(1, 2), '45.1.0.45', 'ssh:bruteforce');           // R4: Angreifer mit eigener anonymer Meldung -> trotzdem gelistet
 many(array(1, 2, 3), '45.1.0.50', 'generic:probe');         // P: nur Verbindungsaufbau, 3 Accounts
 src(11, '45.1.0.60', 'generic:probe');                      // Account 11: Sensor vor 10 Tagen
 src(4, '45.1.0.80', 'generic:probe');                       // Account 4: Sensor (seine IP ist Fall F)
@@ -184,6 +192,10 @@ $s = score('45.1.0.43');
 check('R2: anonym + 2 Accounts (2.5) -> gelistet', $s AND (int)$s['listed'] === 1 AND (float)$s['strong_eff'] === 2.5, $s);
 $s = score('45.1.0.44');
 check('R3: nur anonym -> nicht gelistet', $s AND (int)$s['listed'] === 0 AND (float)$s['accounts_eff'] === 0.5, $s);
+$s = score('45.1.0.45');
+check('R4: anonyme Meldung von der Angreifer-IP nimmt sie nicht aus', $s AND (int)$s['listed'] === 1, $s);
+$s = score('45.1.0.1');
+check('R5: anonyme Sensoren in den Netzen von 1 und 2 verschmelzen sie nicht (2 Gruppen)', $s AND (int)$s['accounts'] === 2, $s);
 $s = score('45.1.0.50'); $c = score('45.1.0.3');
 check('P: nur Verbindungsaufbau 3 Accounts -> gelistet, Wert < Scan < Login', $s AND (int)$s['listed'] === 1 AND (int)$s['score'] < (int)$c['score'] AND (int)$c['score'] < (int)score('45.1.0.5')['score'],
 	array($s['score'] ?? null, $c['score'] ?? null));
@@ -201,7 +213,7 @@ echo "Generator\n";
 $o = gen();
 check('voller Lauf ohne Fehler', str_contains($o, 'Fertig') AND !preg_match('/Warning|Notice|Deprecated|Fatal/i', $o), $o);
 $v64 = lines("$PUB/ipv64_blocklist_v64.txt");
-$expect = array('45.1.0.1/32', '45.1.0.3/32', '45.1.0.5/32', '45.1.0.9/32', '45.1.0.14/32', '45.1.0.30/32', '45.1.0.31/32', '45.1.0.32/32', '45.1.0.43/32', '45.1.0.50/32', '2a02:1::/64', '2a02:2::/64');
+$expect = array('45.1.0.1/32', '45.1.0.3/32', '45.1.0.5/32', '45.1.0.9/32', '45.1.0.14/32', '45.1.0.30/32', '45.1.0.31/32', '45.1.0.32/32', '45.1.0.43/32', '45.1.0.45/32', '45.1.0.50/32', '2a02:1::/64', '2a02:2::/64');
 sort($expect);
 $got = $v64; sort($got);
 check('Tagesstand v64 = erwartete IPs', $got === $expect, $v64);
@@ -209,7 +221,7 @@ check('research nicht in v64', !in_array('45.1.0.20/32', $v64, true));
 $old = array_merge(glob("$PUB/*v64_*") ?: array(), glob("$LIVE/*v64_*") ?: array());
 $old = array_filter($old, fn($f) => preg_match('/v64_(ssh|web|mail|rdp|scanner|research)\./', $f));
 check('keine Teillisten mehr (alte Dateien entfernt)', !$old, array_map('basename', $old));
-check('v4/v6 getrennt, IPv6 als /64 (zwei Adressen eines /64 ein Eintrag)', lines("$PUB/ipv64_blocklist_v6_v64.txt") === array('2a02:1::/64', '2a02:2::/64') AND count(lines("$PUB/ipv64_blocklist_v4_v64.txt")) === 10);
+check('v4/v6 getrennt, IPv6 als /64 (zwei Adressen eines /64 ein Eintrag)', lines("$PUB/ipv64_blocklist_v6_v64.txt") === array('2a02:1::/64', '2a02:2::/64') AND count(lines("$PUB/ipv64_blocklist_v4_v64.txt")) === 11);
 $mk = (string)@file_get_contents("$PUB/v64_mikrotik_v4_v64.rsc");
 check('MikroTik Listenname IPv64-v64', str_contains($mk, 'remove [find list=IPv64-v64 ') AND str_contains($mk, 'add list=IPv64-v64 address=45.1.0.1/32'), substr($mk, 0, 300));
 check('Live-Fassung im nicht oeffentlichen Ordner', lines("$LIVE/ipv64_blocklist_v64.txt") === $v64 AND is_file("$LIVE/v64_mikrotik_v6_v64.rsc"));
@@ -219,7 +231,7 @@ $idx = json_decode((string)@file_get_contents("$PUB/index.json"), true);
 $hp = array_values(array_filter($idx['lists'] ?? array(), fn($e) => ($e['category'] ?? '') === 'honeypot'));
 check('index.json: 1 Eintrag Kategorie honeypot (nur v64), in_all false', count($hp) === 1 AND !array_filter($hp, fn($e) => $e['in_all'] !== false), array_column($hp, 'id'));
 $e = $hp[0] ?? array();
-check('index.json: v64 mit Anzahl, Lizenz, Dateien, live', ($e['id'] ?? '') === 'v64' AND $e['count'] === 12 AND $e['count_v4'] === 10 AND $e['count_v6'] === 2 AND $e['license'] !== ''
+check('index.json: v64 mit Anzahl, Lizenz, Dateien, live', ($e['id'] ?? '') === 'v64' AND $e['count'] === 13 AND $e['count_v4'] === 11 AND $e['count_v6'] === 2 AND $e['license'] !== ''
 	AND ($e['files']['mikrotik_v4'] ?? '') === 'v64_mikrotik_v4_v64.rsc' AND $e['live'] === true, $e);
 check('index.json: Live-Adresse', ($idx['live']['base'] ?? '') === 'https://ipv64.net/blocklists/live/{token}/', $idx['live'] ?? null);
 $ok = true; foreach($hp as $x) { foreach($x['files'] as $f) { if(!is_file("$PUB/$f")) { $ok = false; } } }

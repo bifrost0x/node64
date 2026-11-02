@@ -27,7 +27,8 @@ $dry = in_array('--dry', $argv ?? array(), true);
 $now = time();
 $q = function(string $sql, array $a = array()) use ($pdo): PDOStatement { $st = $pdo->prepare($sql); $st->execute($a); return $st; };
 
-$rows = $q("SELECT s.ip, s.ip_bin, s.kind, s.service, s.port, s.`count` n, s.last_seen, s.source, r.ip sensor_ip, se.country sensor_cc
+// Sensor-IP: aus der Meldung, bei anonymen Meldungen (ohne IP gespeichert) die letzte IP des Sensors
+$rows = $q("SELECT s.ip, s.ip_bin, s.kind, s.service, s.port, s.`count` n, s.last_seen, s.source, IF(r.ip != '', r.ip, COALESCE(se.last_ip, '')) sensor_ip, se.country sensor_cc
 	FROM hp_report_sources s JOIN hp_reports r ON r.id = s.report_ref AND r.day = s.day LEFT JOIN hp_sensors se ON se.sensor_id = r.sensor_id
 	WHERE s.last_seen >= :d ORDER BY s.last_seen DESC LIMIT " . HPL_ROWS, array('d' => gmdate('Y-m-d H:i:s', $now - HPL_MINUTES * 60)))->fetchAll(PDO::FETCH_ASSOC);
 

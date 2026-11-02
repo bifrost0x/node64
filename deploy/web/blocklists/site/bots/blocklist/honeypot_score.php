@@ -231,18 +231,20 @@ function hps_geo_find(array $g, string $bin): ?string {
 
 // ---------------------------------------------------------------- 1. Sensoren, Gruppen, aktive Accounts
 
-// Sensor-IPs (nie listen, nie in hp_scores): letzte IP aller Sensoren und alle Meldungs-IPs der letzten 30 Tage.
+// Sensor-IPs (nie listen, nie in hp_scores): letzte IP aller Sensoren mit Account und alle Meldungs-IPs der letzten
+// 30 Tage. Anonyme Sensoren (userid 0) nicht: sonst nimmt jeder per anonymer Meldung seine eigene IP von der Liste.
 // IPv4 genau, IPv6 als /64 (Privacy-Adressen wechseln innerhalb des Netzes).
 $sensorIps = array();
 $addSensorIp = function(string $ip) use (&$sensorIps) {
 	$bin = filter_var($ip, FILTER_VALIDATE_IP) ? inet_pton($ip) : false;
 	if($bin !== false) { $sensorIps[strlen($bin) === 4 ? $bin : substr($bin, 0, 8)] = true; }
 };
-foreach(hps_q("SELECT DISTINCT last_ip FROM hp_sensors WHERE last_ip != ''")->fetchAll(PDO::FETCH_COLUMN) as $ip) { $addSensorIp($ip); }
+foreach(hps_q("SELECT DISTINCT last_ip FROM hp_sensors WHERE last_ip != '' AND userid != 0")->fetchAll(PDO::FETCH_COLUMN) as $ip) { $addSensorIp($ip); }
 foreach(hps_q("SELECT DISTINCT ip FROM hp_reports WHERE received_at >= :d AND ip != ''", array('d' => gmdate('Y-m-d H:i:s', $now - HPS_SENSOR_IPS)))->fetchAll(PDO::FETCH_COLUMN) as $ip) { $addSensorIp($ip); }
 $isSensorIp = fn(string $bin): bool => isset($sensorIps[strlen($bin) === 4 ? $bin : substr($bin, 0, 8)]);
 
-// Gruppen: Accounts mit Sensoren im selben Netz (Union-Find)
+// Gruppen: Accounts mit Sensoren im selben Netz (Union-Find). Anonym (0) bleibt eine eigene Gruppe: seine Sensoren
+// stehen in vielen fremden Netzen und wuerden sonst unabhaengige Accounts zu einer Gruppe verschmelzen.
 $parent = array();
 $find = function(int $u) use (&$parent, &$find): int { if(!isset($parent[$u])) { $parent[$u] = $u; } if($parent[$u] !== $u) { $parent[$u] = $find($parent[$u]); } return $parent[$u]; };
 $netOwner = array();
@@ -251,6 +253,7 @@ foreach(hps_q("SELECT DISTINCT userid, ip FROM hp_reports WHERE received_at >= :
 	$net = hps_sensor_net((string)$x['ip']);
 	if($net === null) { continue; }
 	$u = (int)$x['userid'];
+	if($u === 0) { continue; }
 	if(!isset($netOwner[$net])) { $netOwner[$net] = $u; $find($u); continue; }
 	$a = $find($netOwner[$net]); $b = $find($u);
 	if($a !== $b) { $parent[max($a, $b)] = min($a, $b); }

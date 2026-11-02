@@ -33,7 +33,7 @@ $admins = null;
 foreach(hpr_all($pdo, "SELECT * FROM hp_release_requests WHERE status = 'open' AND confirmed_at IS NOT NULL ORDER BY id") as $r) {
 	$b = bin2hex($r['ip_bin']); $conf = (int)hpr_ts($r['confirmed_at']);
 	$why = array();
-	$t = hpr_one($pdo, "SELECT COUNT(*) n, MAX(last_seen) l, COUNT(DISTINCT userid) a FROM hp_report_sources WHERE ip_bin = UNHEX(:b) AND last_seen > :c", array('b' => $b, 'c' => $r['confirmed_at']));
+	$t = hpr_one($pdo, "SELECT COUNT(*) n, MAX(last_seen) l, COUNT(DISTINCT userid) a FROM hp_report_sources WHERE ip_bin = UNHEX(:b) AND last_seen > :c AND userid != 0", array('b' => $b, 'c' => $r['confirmed_at']));
 	if((int)$t['n'] > 0) { $why[] = 'greift weiter an: ' . (int)$t['n'] . ' Meldungen von ' . (int)$t['a'] . ' Accounts seit der Bestaetigung, zuletzt ' . $t['l'] . ' UTC'; }
 	$o = (int)hpr_one($pdo, "SELECT COUNT(*) c FROM hp_release_requests WHERE ip_bin = UNHEX(:b) AND id != :id AND confirmed_at IS NOT NULL AND created_at >= :d",
 		array('b' => $b, 'id' => $r['id'], 'd' => hpr_dt($now - HPR_HISTORY_DAYS * 86400)))['c'];

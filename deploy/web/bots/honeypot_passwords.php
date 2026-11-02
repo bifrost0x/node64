@@ -33,7 +33,7 @@ if($lock === false OR !flock($lock, LOCK_EX | LOCK_NB)) { echo "Laeuft schon, En
 try {
 	[$active, $n] = hps_threshold($pdo, $now);
 	// 1. Schwelle erfuellt (30 Tage, verschiedene Accounts je Passwort ueber alle Dienste und Benutzernamen)
-	$qual = array_column(hps_all($pdo, "SELECT s.pass_sha1 h, COUNT(DISTINCT k.userid) a FROM hp_sample_contrib k
+	$qual = array_column(hps_all($pdo, "SELECT s.pass_sha1 h, COUNT(DISTINCT NULLIF(k.userid, 0)) a FROM hp_sample_contrib k
 		JOIN hp_samples_creds s ON s.day = k.day AND s.key_hash = k.key_hash
 		WHERE k.kind = 'cred' AND k.day >= :d AND s.pass_sha1 != '' AND s.pass_sha1 != :e GROUP BY s.pass_sha1 HAVING a >= " . (int)$n,
 		array('d' => gmdate('Y-m-d', $now - (HPS_DAYS - 1) * 86400), 'e' => HPW_EMPTY)), 'h');

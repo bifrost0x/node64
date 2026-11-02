@@ -28,7 +28,8 @@ const HP_MAX_PERIOD   = 604800;   // Zeitraum hoechstens 7 Tage
 const HP_CLOCK_SKEW   = 300;      // Zeiten duerfen 5 min in der Zukunft liegen
 const HP_MIN_GAP      = 120;      // hoechstens eine Meldung je Sensor in 2 Minuten
 const HP_MAX_SENSORS  = 50;       // Sensoren je Account, nur falls honeypot/hp_limits_lib.php fehlt (H5: Limit je Klasse)
-const HP_ANON_SENSORS = 3;        // anonyme Sensoren je Absender-IP (Meldung in 30 Tagen)
+const HP_ANON_SENSORS = 3;        // anonyme Sensoren je Absender-Netz (IPv4-Adresse bzw. IPv6-/64, Meldung in 30 Tagen) ...
+const HP_ANON_NEW_REFILL = 3 / 86400; // ... und hoechstens 3 neue anonyme Sensoren je Netz und Tag (auch bei Umzug)
 const HP_ANON_ACTIVE  = 2592000;  // 30 Tage: zaehlen fuers Limit; danach wird die IP am Sensor geloescht
 const HP_ANON_BURST   = 6;        // anonyme Meldungen je Absender-IP: Burst ...
 const HP_ANON_REFILL  = 0.05;     // ... und 3 pro Minute
@@ -57,6 +58,13 @@ const HP_MODES    = array('module', 'headless');
 // ---------------------------------------------------------------- Hilfen
 
 function hp_dt(int $ts): string { return gmdate('Y-m-d H:i:s', $ts); }
+
+/** Absender-Netz fuer die anonymen Grenzen: IPv4 die Adresse, IPv6 das /64 (Privacy-Adressen wechseln darin). */
+function hp_anon_net(string $ip): string {
+	$bin = filter_var($ip, FILTER_VALIDATE_IP) ? inet_pton($ip) : false;
+	if($bin === false) { return $ip; }
+	return strlen($bin) === 16 ? inet_ntop(substr($bin, 0, 8) . str_repeat("\0", 8)) . '/64' : $ip;
+}
 
 /** Liste (0..n-1)? Wie array_is_list, das erst ab PHP 8.1 da ist. */
 function hp_is_list(array $a): bool { return $a === array() || array_keys($a) === range(0, count($a) - 1); }
@@ -297,9 +305,13 @@ function hp_store(array $r, int $bytes, int $now): array {
 		if((int)$sen['disabled'] === 1) { fail(403, 'sensor_disabled', 'This sensor is disabled by ipv64.'); }
 		if((int)$sen['userid'] !== $u OR $sen['last_seen'] === null) { // neu oder an einen anderen Account umgezogen
 			// H5: Limit je Klasse (honeypot/hp_limits_lib.php: Standard 5, sonst 25), es zaehlen nur Sensoren mit Meldung in 30 Tagen
-			if($anon) { // anonym: Limit je Absender-IP
-				$n = (int)q1("SELECT count(*) c FROM hp_sensors WHERE userid = 0 AND last_ip = :ip AND sensor_id != :s AND last_seen >= :d", array('ip' => $ip, 's' => $sid, 'd' => hp_dt($now - HP_ANON_ACTIVE)))['c'];
-				if($n >= HP_ANON_SENSORS) { fail(403, 'sensor_limit', "At most " . HP_ANON_SENSORS . " anonymous honeypot sensors per IP address. Send an API key to report with an account.", array('limit' => HP_ANON_SENSORS)); }
+			if($anon) { // anonym: Limit je Absender-Netz (IPv6 je /64) und neue Sensoren je Netz und Tag
+				$net = hp_anon_net($ip); $n = 0;
+				foreach(qa("SELECT last_ip FROM hp_sensors WHERE userid = 0 AND last_ip != '' AND sensor_id != :s AND last_seen >= :d", array('s' => $sid, 'd' => hp_dt($now - HP_ANON_ACTIVE))) as $x) {
+					if(hp_anon_net((string)$x['last_ip']) === $net) { $n++; }
+				}
+				if($n >= HP_ANON_SENSORS) { fail(403, 'sensor_limit', "At most " . HP_ANON_SENSORS . " anonymous honeypot sensors per IP address (IPv6: per /64). Send an API key to report with an account.", array('limit' => HP_ANON_SENSORS)); }
+				rl_enforce('hp_anon_new:' . $net, HP_ANON_SENSORS, HP_ANON_NEW_REFILL, 'new anonymous honeypot sensors');
 			} else {
 				if(is_file(__DIR__ . '/honeypot/hp_limits_lib.php')) { require_once __DIR__ . '/honeypot/hp_limits_lib.php'; }
 				[$max, $act] = function_exists('hpl_sensor_limit') ? array(hpl_sensor_limit((int)($GLOBALS['ME']['user_class'] ?? 1)), HPL_SENSOR_ACTIVE) : array(HP_MAX_SENSORS, 3650 * 86400);
@@ -396,7 +408,7 @@ function hp_store(array $r, int $bytes, int $now): array {
 route('POST', '/honeypot/reports', function() {
 	$now = time();
 	if(bearer() !== null) { authenticate(); } // Key gesendet: wie bisher (falscher Key = 401, nie anonym weiter)
-	else { rl_enforce('hp_anon:' . client_ip(), HP_ANON_BURST, HP_ANON_REFILL, 'anonymous honeypot reports'); }
+	else { rl_enforce('hp_anon:' . hp_anon_net(client_ip()), HP_ANON_BURST, HP_ANON_REFILL, 'anonymous honeypot reports'); } // IPv6 je /64
 	[$b, $bytes] = hp_body();
 	$r = hp_parse($b, $now);
 	[$status, $out] = hp_store($r, $bytes, $now);

@@ -125,7 +125,7 @@ function hps_rebuild_top(PDO $pdo, int $n, int $now): array {
 	$out = array();
 	foreach($src as $kind => [$ck, $tab, $col]) {
 		// CAST AS BINARY: Gross-/Kleinschreibung und Leerzeichen am Ende unterscheiden (die Spalten sind _general_ci)
-		$rows = hps_all($pdo, "SELECT CAST(s.`$col` AS BINARY) t, SUM(LEAST(k.cnt, " . HPS_CAP_DAY . ")) e, COUNT(DISTINCT k.userid) a, MAX(s.last_seen) ls
+		$rows = hps_all($pdo, "SELECT CAST(s.`$col` AS BINARY) t, SUM(LEAST(k.cnt, " . HPS_CAP_DAY . ")) e, COUNT(DISTINCT NULLIF(k.userid, 0)) a, MAX(s.last_seen) ls
 			FROM hp_sample_contrib k JOIN `$tab` s ON s.day = k.day AND s.key_hash = k.key_hash
 			WHERE k.kind = :k AND k.day >= :d GROUP BY t HAVING a >= " . ($kind === 'fp' ? max($n, HPS_FP_MIN) : $n) . " ORDER BY e DESC, a DESC, t LIMIT " . (HPS_KEEP[$kind] * 3),
 			array('k' => $ck, 'd' => $from));
@@ -266,7 +266,7 @@ function hps_compute(PDO $pdo, string $bldir, int $now, bool $rebuild = true): a
 
 	// neue Pfade: heute erstmals gesehen, ab N Accounts (heute), bereinigt
 	$np = array();
-	foreach(hps_all($pdo, "SELECT p.path, p.`count` e, (SELECT COUNT(DISTINCT k.userid) FROM hp_sample_contrib k WHERE k.kind = 'path' AND k.day = p.day AND k.key_hash = p.key_hash) a
+	foreach(hps_all($pdo, "SELECT p.path, p.`count` e, (SELECT COUNT(DISTINCT NULLIF(k.userid, 0)) FROM hp_sample_contrib k WHERE k.kind = 'path' AND k.day = p.day AND k.key_hash = p.key_hash) a
 		FROM hp_samples_paths p WHERE p.day = :t AND NOT EXISTS (SELECT 1 FROM hp_samples_paths o WHERE o.key_hash = p.key_hash AND o.day < :t2)
 		HAVING a >= " . (int)$n . " ORDER BY e DESC LIMIT 1000", array('t' => $today, 't2' => $today)) as $x) {
 		$t = hps_clean('path', (string)$x['path']);
