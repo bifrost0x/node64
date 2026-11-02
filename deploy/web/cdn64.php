@@ -312,7 +312,13 @@ function c64w_target_fields(?array $t): void {
 			<?php // Liste der Nodes nur noch in nodes.php; hier nur die Zahl
 			$tunOn = count(array_filter((array)$ov['tunnels'], fn($tn) => !empty($tn['last_seen']) && strtotime($tn['last_seen']) >= time() - 300));
 			echo empty($ov['tunnels']) ? '<p class="text-muted mb-2">No Node64 connected yet.</p>'
-				: '<p class="mb-2"><b>' . count($ov['tunnels']) . ' tunnel' . (count($ov['tunnels']) === 1 ? '' : 's') . '</b>, ' . $tunOn . ' connected – details in the node overview.</p>'; ?>
+				: '<p class="mb-2"><b>' . count($ov['tunnels']) . ' tunnel' . (count($ov['tunnels']) === 1 ? '' : 's') . '</b>, ' . $tunOn . ' connected – details in the node overview.</p>';
+			// je Tunnel: Server und Verbindungen je Server (gewaehlt in Node64, PROXY64 > Spalte CDN64; hier nur Anzeige)
+			foreach((array)$ov['tunnels'] as $tn) {
+				if(empty($tn['servers'])) { continue; }
+				echo '<div class="text-muted">' . c64w_h($tn['name'] ?: $tn['id']) . ': ' . c64w_h(implode(', ', (array)$tn['servers']['active'])) . ' · ' . (int)$tn['sessions'] . ' connection' . ((int)$tn['sessions'] === 1 ? '' : 's') . ' per server</div>';
+			}
+			if(!empty($ov['tunnels'])) { echo '<p class="small text-muted mt-1 mb-2">Business and Company choose servers and connections per tunnel in Node64 (PROXY64, column CDN64).</p>'; } ?>
 			<a class="btn btn-sm btn-outline-primary" href="/nodes.php"><i class="fa-solid fa-server"></i> Node overview</a>
 		</div></div>
 	</div>
