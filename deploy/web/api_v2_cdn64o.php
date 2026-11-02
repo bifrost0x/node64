@@ -16,6 +16,7 @@ const C64O_CDN_TMP      = 3;    // Markierung in subdomain_records (1/2 = altes 
 const C64O_MAX_TUNNELS  = 10;   // Tunnels je Account
 const C64O_EDGE_STALE   = 45;   // Sekunden ohne Abruf: Server gilt als ausgefallen (G6)
 const C64O_EDGE_BACK    = 30;   // Sekunden wieder da: Adressen wieder eintragen
+const C64O_EDGE_SUBST   = 180;  // Sekunden ausgetragen, bis fuer einen zugeteilten Server ein anderer einspringt (Neustart: kein Wechsel)
 const C64O_MODES        = array(1, 2, 3);  // 1 durchreichen, 2 terminieren (T5), 3 direkt zum Ziel (T7)
 const C64O_ACL_MAX      = 200;  // Eintraege je Liste
 const C64O_LIST_MAX     = 1000; // Sperr-/Freigabeliste je Tunnel (PROXY64 Zugriffslisten), Eintraege je Liste
@@ -81,8 +82,9 @@ function c64o_edges_pick(array $cands, array $have, int $k, array $load, string 
 /**
  * Server eines Accounts fuer die Node (Tunnel) und das DNS (ohne ausgefallene). Zuteilung fest je Account
  * (cdn64o_user_edges): je Standort zuerst einer, jeweils der mit den wenigsten Accounts; aendert sich die Anzahl
- * (Klasse, Auswahl), kommen Server dazu bzw. fallen die zuletzt zugeteilten weg. Ist ein zugeteilter Server ausgefallen
- * (withdrawn, G6) oder in Wartung (disabled), springt bis zu seiner Rueckkehr ein anderer ein (gleicher Standort zuerst).
+ * (Klasse, Auswahl), kommen Server dazu bzw. fallen die zuletzt zugeteilten weg. Ist ein zugeteilter Server laenger als
+ * C64O_EDGE_SUBST ausgefallen (withdrawn, G6) oder in Wartung (disabled), springt bis zu seiner Rueckkehr ein anderer
+ * ein (gleicher Standort zuerst); vorher tragen die uebrigen Server des Accounts (nur einer: kurzer Ausfall).
  * "Alle" (oder Tabellen fehlen): alle eingeschalteten Server wie bisher. Rueckgabe array('node' => [...], 'dns' => [...]).
  */
 function c64o_user_edges(int $u): array {
@@ -91,6 +93,7 @@ function c64o_user_edges(int $u): array {
 	$all = $GLOBALS['c64o_ue_all'];
 	$on = array_values(array_filter($all, fn($e) => (int)$e['disabled'] === 0));
 	$up = fn($e) => (int)$e['disabled'] === 0 && (int)($e['withdrawn'] ?? 0) === 0;
+	$gone = fn($e) => (int)$e['disabled'] === 1 || c64o_edge_long_down($e); // Ersatz noetig (Wartung oder laenger ausgefallen)
 	$node = $on;
 	$changed = false; // Zuteilung geaendert: das DNS der Namen muss nach (c64o_user_edges_settle)
 	try {
@@ -134,7 +137,7 @@ function c64o_user_edges(int $u): array {
 			$ids = array_column($mine, 'id');
 			foreach($mine as $e) {
 				if((int)$e['disabled'] === 0) { $node[] = $e; } // ausgefallen: Tunnel bleibt, die Node verbindet neu, sobald er zurueck ist
-				if($up($e)) { continue; }
+				if(!$gone($e)) { continue; } // gesund oder erst kurz weg (Neustart): kein Wechsel, die anderen Server tragen
 				$spare = array_values(array_filter($on, fn($x) => $up($x) && !in_array($x['id'], $ids, true) && !in_array($x, $node, true)));
 				foreach(c64o_edges_pick($spare, array(), 1, $load, (string)($e['location'] ?? '')) as $x) { $node[] = $x; }
 			}
@@ -154,6 +157,12 @@ function c64o_user_edges_settle(int $u): void {
 	if(empty($GLOBALS['c64o_ue_changed'][$u])) { return; }
 	unset($GLOBALS['c64o_ue_changed'][$u]);
 	c64o_dns_sync_all('servers_changed', '', $u);
+}
+
+/** Server seit mehr als C64O_EDGE_SUBST Sekunden aus dem DNS (G6)? Ohne Spalte withdrawn_at: sofort. */
+function c64o_edge_long_down(array $e): bool {
+	if((int)($e['withdrawn'] ?? 0) !== 1) { return false; }
+	return empty($e['withdrawn_at']) || strtotime($e['withdrawn_at']) <= time() - C64O_EDGE_SUBST;
 }
 
 /** Auswahl der Server eines Accounts (GET/PUT /cdn64o/servers, Uebersicht). */
@@ -494,6 +503,7 @@ function c64o_edge_watch(): void {
 		if(!$fresh($e)) {
 			if((int)$e['withdrawn'] === 0 && $alive > 0 && !c64o_edge_answers($e)) { c64o_edge_dns($e, false); }
 			elseif($e['back_since'] !== null) { q("UPDATE cdn64o_edges set back_since = NULL WHERE id = :i", array('i' => $e['id'])); }
+			if((int)$e['withdrawn'] === 1 && c64o_edge_long_down($e)) { c64o_edge_replace($e); }
 			continue;
 		}
 		if((int)$e['withdrawn'] === 1) {
@@ -501,6 +511,21 @@ function c64o_edge_watch(): void {
 			elseif(strtotime($e['back_since']) <= time() - C64O_EDGE_BACK) { c64o_edge_dns($e, true); }
 		}
 	}
+}
+
+/**
+ * Server laenger als C64O_EDGE_SUBST weg: einmal je Ausfall (withdrawn_at, Merker in sys_get_temp_dir()) das DNS aller
+ * Namen abgleichen - fuer Accounts, denen er zugeteilt ist, springt ein anderer ein; ihre Nodes verbinden binnen einer
+ * Minute zusaetzlich dorthin.
+ */
+function c64o_edge_replace(array $e): void {
+	$f = sys_get_temp_dir() . '/c64o_subst_' . (int)$e['id'];
+	$mark = (string)($e['withdrawn_at'] ?? '');
+	if(is_file($f) AND trim((string)@file_get_contents($f)) === $mark) { return; }
+	@file_put_contents($f, $mark);
+	unset($GLOBALS['c64o_ue'], $GLOBALS['c64o_ue_all']);
+	$n = c64o_dns_sync_all('edge_replaced', $e['name']);
+	error_log("cdn64o: edge " . $e['name'] . " still down, stand-in for its accounts, DNS of $n names changed");
 }
 
 /** Antwortet der Server auf /health? Hoechstens ein Versuch je Minute und Server (Ergebnis in sys_get_temp_dir()). */
@@ -520,6 +545,7 @@ function c64o_edge_answers(array $e): bool {
 /** Server ausgefallen (false) bzw. wieder da (true): Kennzeichen setzen, DNS aller CDN64-Namen abgleichen. */
 function c64o_edge_dns(array $e, bool $on): void {
 	q("UPDATE cdn64o_edges set withdrawn = :w, back_since = NULL WHERE id = :i", array('w' => $on ? 0 : 1, 'i' => $e['id']));
+	try { q("UPDATE cdn64o_edges set withdrawn_at = " . ($on ? "NULL" : "NOW()") . " WHERE id = :i", array('i' => $e['id'])); } catch(Throwable $ex) {} // Spalte fehlt: Ersatz sofort
 	unset($GLOBALS['c64o_ue'], $GLOBALS['c64o_ue_all']);
 	$n = c64o_dns_sync_all($on ? 'edge_back' : 'edge_down', $e['name']);
 	error_log("cdn64o: edge " . $e['name'] . ($on ? " back" : " withdrawn") . ", DNS of $n names changed");

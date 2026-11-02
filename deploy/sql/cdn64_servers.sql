@@ -1,12 +1,15 @@
 -- CDN64: Server je Account nach Klasse statt alle Server fuer jeden (2026-11-02). Mehrfach ausfuehrbar.
 -- Free 1 Server, Supporter 2, Business waehlt 1 bis 2, Company 1 bis alle (auch kuenftige). Zugeteilt wird je Standort
--- zuerst einer, jeweils der mit den wenigsten Accounts; faellt ein Server aus, springt ein anderer ein, bis er zurueck ist.
+-- zuerst einer, jeweils der mit den wenigsten Accounts; faellt ein Server laenger als 3 Minuten aus, springt ein
+-- anderer ein, bis er zurueck ist.
 -- Ohne dieses SQL laeuft das Portal wie bisher (alle Server); danach stellt es die Namen binnen Minuten um.
 
 -- Standort je Server (nbg = Nuernberg, fsn = Falkenstein): ein Account mit 2 Servern bekommt beide Standorte.
 ALTER TABLE `cdn64o_edges` ADD COLUMN IF NOT EXISTS `location` varchar(16) NOT NULL DEFAULT '' AFTER `hostname`;
 UPDATE `cdn64o_edges` SET `location` = 'nbg' WHERE `name` IN ('srv07', 'srv10');
 UPDATE `cdn64o_edges` SET `location` = 'fsn' WHERE `name` IN ('srv08', 'srv09');
+-- Seit wann ein Server aus dem DNS ist (G6): erst nach 3 Minuten springt fuer ihn ein anderer ein (Neustart: kein Wechsel).
+ALTER TABLE `cdn64o_edges` ADD COLUMN IF NOT EXISTS `withdrawn_at` datetime DEFAULT NULL AFTER `withdrawn`;
 
 -- Zuteilung je Account (fest, bis sich die Anzahl aendert) und gewaehlte Anzahl (Business/Company; 0 = hoechstens).
 CREATE TABLE IF NOT EXISTS `cdn64o_user_edges` (
