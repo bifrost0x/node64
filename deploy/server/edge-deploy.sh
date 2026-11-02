@@ -1,5 +1,5 @@
 #!/bin/bash
-# Baut cmd/cdn64-edge fuer Linux/amd64 und spielt es auf die CDN64-Server (SSH-Hosts cdn7 cdn8) ein.
+# Baut cmd/cdn64-edge fuer Linux/amd64 und spielt es auf die CDN64-Server (SSH-Hosts cdn7 cdn8 cdn9 cdn10) ein.
 # Rolling: ein Server nach dem anderen; startet der neue Dienst nicht oder antwortet /health nicht, geht der Server
 # auf die vorige Version zurueck und das Deploy bricht ab (der naechste Server bleibt unberuehrt).
 # Aufruf: bash deploy/server/edge-deploy.sh [version] [hosts...]
@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 VERSION=${1:-$(git describe --tags --always 2>/dev/null || echo dev)}
 shift || true
-HOSTS=${*:-"cdn7 cdn8"}
+HOSTS=${*:-"cdn7 cdn8 cdn9 cdn10"}
 export PATH="/c/Program Files/Go/bin:$PATH"
 if [ -z "${BIN:-}" ]; then
   echo "== build $VERSION"
