@@ -38,7 +38,10 @@ function c64o_edges(bool $all = false): array {
 
 function c64o_edge_out(array $e): array {
 	$ips = array_values(array_filter(array($e['ipv6'], $e['ipv4'])));
-	return array('name' => $e['name'], 'host' => $e['hostname'], 'port' => (int)$e['tunnel_port'], 'ips' => $ips);
+	$o = array('name' => $e['name'], 'host' => $e['hostname'], 'port' => (int)$e['tunnel_port'], 'ips' => $ips);
+	// ausgefallen (G6): die Node verbindet weiter (Rueckkehr), zaehlt ihn aber nicht als "im Aufbau" (PROXY64 1.47.0)
+	if((int)($e['withdrawn'] ?? 0) === 1) { $o['standby'] = true; }
+	return $o;
 }
 
 /** Klasse eines Accounts (user_class-Zeile, leer = unbekannt). */
