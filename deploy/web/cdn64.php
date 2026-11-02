@@ -1,6 +1,6 @@
 <?php
 /**
- * IPv64.net – CDN64 (srv07/srv08/srv09.cdn64.de): Uebersicht aller Namen, Modus 3 (direkt zum Ziel) anlegen und
+ * IPv64.net – CDN64 (srv07 bis srv10.cdn64.de): Uebersicht aller Namen, Modus 3 (direkt zum Ziel) anlegen und
  * verwalten, Modus 1/2 (Tunnel, eingerichtet in Node64) anzeigen und ausschalten. Die Seite ruft serverseitig die
  * API v2 (/cdn64o) mit dem Account-Key des angemeldeten Nutzers auf - Webseite, API und Node nutzen so dieselben
  * Pruefungen. Planung: docs/CDN64-ONLINE.md (Abschnitt 8.6) im Node64-Repo.
@@ -124,7 +124,7 @@ echo $info;
 <div class="row">
 	<div class="col-12 pb-3">
 		<div class="card">
-			<div class="card-header p-2"><i class="fa-solid fa-cloud-arrow-up text-primary"></i> CDN64 <small class="text-muted">srv07.cdn64.de (Nuremberg) · srv08.cdn64.de (Falkenstein) · srv09.cdn64.de (Falkenstein) · <a href="/cdn64-server.php">Status</a></small></div>
+			<div class="card-header p-2"><i class="fa-solid fa-cloud-arrow-up text-primary"></i> CDN64 <small class="text-muted">srv07.cdn64.de (Nuremberg) · srv08.cdn64.de (Falkenstein) · srv09.cdn64.de (Falkenstein) · srv10.cdn64.de (Nuremberg) · <a href="/cdn64-server.php">Status</a></small></div>
 			<div class="card-body p-3 small">
 				<p class="mb-2">CDN64 makes your service reachable from the internet over IPv4 and IPv6 – also behind DS-Lite or without open ports. Built-in load balancing: visitors are spread across all servers (Nuremberg and Falkenstein) automatically, and if one server fails, the others take over.</p>
 				<ul class="mb-2">

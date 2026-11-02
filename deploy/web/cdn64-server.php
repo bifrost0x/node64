@@ -2,7 +2,7 @@
 include("header.php");
 // CDN64-Server (cdn64o_edges): Online = Lebenszeichen in den letzten 60 Sekunden (die Server melden sich alle 10 s,
 // api_v2_cdn64o.php), disabled = Wartung. Standort nach Namen (die Tabelle hat keinen).
-$c64sLoc = array('srv07' => 'Nuremberg', 'srv08' => 'Falkenstein', 'srv09' => 'Falkenstein');
+$c64sLoc = array('srv07' => 'Nuremberg', 'srv08' => 'Falkenstein', 'srv09' => 'Falkenstein', 'srv10' => 'Nuremberg');
 $c64sH = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
 try {
 	$c64sRows = $pdo->query("SELECT name, hostname, ipv4, ipv6, disabled, version, last_seen, last_seen >= NOW() - INTERVAL 60 SECOND AS fresh FROM cdn64o_edges ORDER BY name")->fetchAll();
