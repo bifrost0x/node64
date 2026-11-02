@@ -271,6 +271,9 @@ function c64w_target_fields(?array $t): void {
 					$st = $h['status'] === 'active' ? '<span class="badge badge-success">active</span>' : ($h['status'] === 'blocked' ? '<span class="badge badge-danger">blocked: ' . c64w_h($h['blocked_reason']) . '</span>' : '<span class="badge badge-warning">' . c64w_h($h['status']) . '</span>');
 					if(!empty($h['paused'])) { $st = '<span class="badge badge-secondary" title="Paused since ' . c64w_h($h['paused_at'] ?? '') . '"><i class="fa-solid fa-pause"></i> paused</span>'; }
 					if($h['acl']['default'] !== 'off') { $st .= ' <span class="badge badge-info">list</span>'; }
+					foreach((array)($h['replaced'] ?? array()) as $g => $s) { // Failover: ausgefallener Server, ein anderer springt ein
+						$st .= ' <span class="badge badge-warning" title="' . c64w_h($g) . ' is not reachable, ' . c64w_h($s) . ' stands in until it is back">failover: ' . c64w_h($s) . ' for ' . c64w_h($g) . '</span>';
+					}
 					// Schutz (30 Tage): nur 4 Zahlen, Details in Node64 (PROXY64 › CDN64 Statistik)
 					$pr = $h['protection'] ?? null; $nf = fn($n) => number_format((int)$n, 0, ',', '.');
 					$prot = $pr ? '<br><small class="text-muted text-nowrap"><i class="fa-solid fa-shield-halved"></i> '
@@ -316,7 +319,9 @@ function c64w_target_fields(?array $t): void {
 			// je Tunnel: Server und Verbindungen je Server (gewaehlt in Node64, PROXY64 > Spalte CDN64; hier nur Anzeige)
 			foreach((array)$ov['tunnels'] as $tn) {
 				if(empty($tn['servers'])) { continue; }
-				echo '<div class="text-muted">' . c64w_h($tn['name'] ?: $tn['id']) . ': ' . c64w_h(implode(', ', (array)$tn['servers']['active'])) . ' · ' . (int)$tn['sessions'] . ' connection' . ((int)$tn['sessions'] === 1 ? '' : 's') . ' per server</div>';
+				$fo = '';
+				foreach((array)($tn['servers']['replaced'] ?? array()) as $g => $s) { $fo .= ' · <span class="text-warning">' . c64w_h($g) . ' not reachable, ' . c64w_h($s) . ' stands in</span>'; }
+				echo '<div class="text-muted">' . c64w_h($tn['name'] ?: $tn['id']) . ': ' . c64w_h(implode(', ', (array)$tn['servers']['active'])) . ' · ' . (int)$tn['sessions'] . ' connection' . ((int)$tn['sessions'] === 1 ? '' : 's') . ' per server' . $fo . '</div>';
 			}
 			if(!empty($ov['tunnels'])) { echo '<p class="small text-muted mt-1 mb-2">Business and Company choose servers and connections per tunnel in Node64 (PROXY64, column CDN64).</p>'; } ?>
 			<a class="btn btn-sm btn-outline-primary" href="/nodes.php"><i class="fa-solid fa-server"></i> Node overview</a>

@@ -41,6 +41,8 @@ function c64o_edge_out(array $e): array {
 	$o = array('name' => $e['name'], 'host' => $e['hostname'], 'port' => (int)$e['tunnel_port'], 'ips' => $ips);
 	// ausgefallen (G6): die Node verbindet weiter (Rueckkehr), zaehlt ihn aber nicht als "im Aufbau" (PROXY64 1.47.0)
 	if((int)($e['withdrawn'] ?? 0) === 1) { $o['standby'] = true; }
+	if(!empty($e['replaced_by'])) { $o['replaced_by'] = $e['replaced_by']; } // Failover: dieser Server ist ersetzt durch ...
+	if(!empty($e['stands_in'])) { $o['stands_in'] = $e['stands_in']; }       // ... bzw. springt ein fuer ...
 	return $o;
 }
 
@@ -92,7 +94,7 @@ function c64o_edges_pick(array $cands, array $have, int $k, array $load, string 
  * zugeteilten weg. Ist ein zugeteilter Server laenger als C64O_EDGE_SUBST ausgefallen (withdrawn, G6) oder in Wartung
  * (disabled), springt bis zu seiner Rueckkehr ein anderer ein (gleicher Standort zuerst); vorher tragen die uebrigen
  * (nur einer: kurzer Ausfall). "Alle" (oder Tabellen fehlen): alle eingeschalteten Server wie bisher.
- * Rueckgabe array('node' => [...], 'dns' => [...]).
+ * Rueckgabe array('node' => [...], 'dns' => [...], 'repl' => [ausgefallen => Ersatz]).
  */
 function c64o_owner_edges(string $owner, ?array $t = null): array {
 	if(isset($GLOBALS['c64o_ue'][$owner])) { return $GLOBALS['c64o_ue'][$owner]; }
@@ -102,6 +104,7 @@ function c64o_owner_edges(string $owner, ?array $t = null): array {
 	$up = fn($e) => (int)$e['disabled'] === 0 && (int)($e['withdrawn'] ?? 0) === 0;
 	$gone = fn($e) => (int)$e['disabled'] === 1 || c64o_edge_long_down($e); // Ersatz noetig (Wartung oder laenger ausgefallen)
 	$node = $on;
+	$repl = array(); // ausgefallener (zugeteilter) Server => Ersatz
 	$changed = false; // Zuteilung geaendert: das DNS der Namen muss nach (c64o_edges_settle)
 	$u = 0;
 	try {
@@ -152,14 +155,14 @@ function c64o_owner_edges(string $owner, ?array $t = null): array {
 				if((int)$e['disabled'] === 0) { $node[] = $e; } // ausgefallen: Tunnel bleibt, die Node verbindet neu, sobald er zurueck ist
 				if(!$gone($e)) { continue; } // gesund oder erst kurz weg (Neustart): kein Wechsel, die anderen Server tragen
 				$spare = array_values(array_filter($on, fn($x) => $up($x) && !in_array($x['id'], $ids, true) && !in_array($x, $node, true)));
-				foreach(c64o_edges_pick($spare, array(), 1, $load, (string)($e['location'] ?? '')) as $x) { $node[] = $x; }
+				foreach(c64o_edges_pick($spare, array(), 1, $load, (string)($e['location'] ?? '')) as $x) { $node[] = $x; $repl[$e['name']] = $x['name']; }
 			}
 			if(!$node) { $node = $on; } // alle zugeteilten in Wartung und kein Ersatz
 		}
 	} catch(Throwable $ex) { $node = $on; } // Tabelle cdn64o_edge_assign/Spalte fehlt: alle wie bisher
 	usort($node, fn($a, $b) => $a['name'] <=> $b['name']);
 	$dns = array_values(array_filter($node, $up));
-	$GLOBALS['c64o_ue'][$owner] = array('node' => $node, 'dns' => $dns ?: $node); // keiner da: Eintraege bleiben (wie G6)
+	$GLOBALS['c64o_ue'][$owner] = array('node' => $node, 'dns' => $dns ?: $node, 'repl' => $repl); // keiner da: Eintraege bleiben (wie G6)
 	if($changed AND $u > 0) { $GLOBALS['c64o_ue_changed'][$u] = true; }
 	return $GLOBALS['c64o_ue'][$owner];
 }
@@ -181,11 +184,18 @@ function c64o_host_edges(array $h): array {
  */
 function c64o_tunnel_edges(string $tid, ?array $t = null): array {
 	$out = array();
-	foreach(c64o_owner_edges($tid, $t)['node'] as $e) { $out[$e['id']] = $e; }
+	$own = c64o_owner_edges($tid, $t);
+	$repl = $own['repl'];
+	foreach($own['node'] as $e) { $out[$e['id']] = $e; }
 	foreach(qa("SELECT DISTINCT ht.host_id FROM cdn64o_host_tunnels ht JOIN cdn64o_hosts h ON h.id = ht.host_id WHERE ht.tunnel_id = :t AND h.mode != 3", array('t' => $tid)) as $r) {
 		$first = c64o_host_first_tunnel((int)$r['host_id']);
-		if($first !== null AND $first !== $tid) { foreach(c64o_owner_edges($first)['node'] as $e) { $out[$e['id']] = $e; } }
+		if($first !== null AND $first !== $tid) { $o = c64o_owner_edges($first); $repl += $o['repl']; foreach($o['node'] as $e) { $out[$e['id']] = $e; } }
 	}
+	foreach($out as &$e) { // Failover sichtbar machen (Node: Abzeichen und Hinweis)
+		if(isset($repl[$e['name']])) { $e['replaced_by'] = $repl[$e['name']]; }
+		if(($g = array_search($e['name'], $repl, true)) !== false) { $e['stands_in'] = $g; }
+	}
+	unset($e);
 	usort($out, fn($a, $b) => $a['name'] <=> $b['name']);
 	return $out;
 }
@@ -238,7 +248,8 @@ function c64o_servers_out(array $t, array $class): array {
 	return array('count' => count($assigned) ?: count($on), 'choice' => (int)($t['edges'] ?? 0), 'max' => c64o_edges_max($class, count($on)),
 		'all' => (int)($class['cdn_edges'] ?? 0) <= 0, 'total' => count($on), 'selectable' => (int)($class['cdn_edges_pick'] ?? 0) === 1,
 		'assigned' => $assigned ?: array_column($on, 'name'), 'active' => array_column($ue['dns'], 'name'),
-		'sessions' => c64o_tunnel_sessions($t, $class), 'sessions_max' => c64o_sessions($class));
+		'sessions' => c64o_tunnel_sessions($t, $class), 'sessions_max' => c64o_sessions($class),
+		'replaced' => (object)$ue['repl']); // Failover: ausgefallener Server => Ersatz
 }
 
 /** Kontingent des Accounts: altes und neues CDN zusammen (Domains, Traffic des Monats in MB), Bandbreite. */
@@ -289,7 +300,7 @@ function c64o_host_out(array $h): array {
 		FROM cdn64o_traffic WHERE host_id = :h AND day >= :d", array('h' => $h['id'], 'd' => date('Y-m-01')));
 	return array('id' => (int)$h['id'], 'fqdn' => $h['fqdn'], 'mode' => (int)$h['mode'], 'wildcard' => (int)$h['wildcard'] === 1, 'status' => $h['status'],
 		'blocked_reason' => $h['blocked_reason'] ?: null, 'paused' => (int)($h['paused'] ?? 0) === 1, 'paused_at' => iso($h['paused_at'] ?? null), 'error' => $h['error'] ?: null, 'tunnels' => $tun, 'domain_id' => (int)$h['subdomain_id'],
-		'edges' => array_map('c64o_edge_out', c64o_host_edges($h)['dns']), 'traffic_month' => array('bytes_in' => (int)$tr['i'], 'bytes_out' => (int)$tr['o'], 'conns' => (int)$tr['c'], 'requests' => (int)$tr['r'], 'rejected' => (int)$tr['x']),
+		'edges' => array_map('c64o_edge_out', c64o_host_edges($h)['dns']), 'replaced' => (object)c64o_host_edges($h)['repl'], 'traffic_month' => array('bytes_in' => (int)$tr['i'], 'bytes_out' => (int)$tr['o'], 'conns' => (int)$tr['c'], 'requests' => (int)$tr['r'], 'rejected' => (int)$tr['x']),
 		'created_via' => $h['created_via'], 'created_at' => iso($h['created_at']), 'updated_at' => iso($h['updated_at']),
 		'target' => (int)$h['mode'] === 3 ? c64o_target_out((int)$h['id']) : null, 'acl' => c64o_acl_out($h),
 		'mappings' => c64o_mappings_out((int)$h['id']), 'waf' => (int)($h['waf'] ?? 1) === 1, 'ja4' => $h['ja4'] ?? 'block',
@@ -619,7 +630,7 @@ function c64o_edge_dns(array $e, bool $on): void {
 	q("UPDATE cdn64o_edges set withdrawn = :w, back_since = NULL WHERE id = :i", array('w' => $on ? 0 : 1, 'i' => $e['id']));
 	try { q("UPDATE cdn64o_edges set withdrawn_at = " . ($on ? "NULL" : "NOW()") . " WHERE id = :i", array('i' => $e['id'])); } catch(Throwable $ex) {} // Spalte fehlt: Ersatz sofort
 	unset($GLOBALS['c64o_ue'], $GLOBALS['c64o_ue_all']);
-	$n = c64o_dns_sync_all($on ? 'edge_back' : 'edge_down', $e['name']);
+	$n = c64o_dns_sync_all($on ? 'edge_back' : 'edge_down', $on ? 'zurück auf ' . $e['name'] : $e['name'] . ' nicht erreichbar');
 	error_log("cdn64o: edge " . $e['name'] . ($on ? " back" : " withdrawn") . ", DNS of $n names changed");
 }
 
@@ -674,7 +685,11 @@ function c64o_dns_sync_all(string $kind, string $msg = '', int $u = 0, int $secs
 		$r = c64o_dns_sync($h);
 		if($r === null) { continue; }
 		if($r === false) { error_log("cdn64o: DNS of " . $h['fqdn'] . " not in sync with its servers"); }
-		c64o_event((int)$h['id'], (int)$h['userid'], $kind, $msg !== '' ? $msg : implode(', ', array_column(c64o_host_edges($h)['dns'], 'name')));
+		$m = $msg;
+		if($kind === 'edge_replaced') { // je Name: welcher Server fuer welchen einspringt
+			$m = implode(', ', array_map(fn($g, $s) => "Ersatz $s für $g", array_keys(c64o_host_edges($h)['repl']), c64o_host_edges($h)['repl'])) ?: $msg;
+		}
+		c64o_event((int)$h['id'], (int)$h['userid'], $kind, $m !== '' ? $m : implode(', ', array_column(c64o_host_edges($h)['dns'], 'name')));
 		$n++;
 	}
 	return $n;
