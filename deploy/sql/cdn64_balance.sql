@@ -3,8 +3,11 @@
 -- daraus speichert das Portal die Last je Server und je Tunnel. Der Job "cdn64bal" (bots/honeypot_cron.php, alle 15 min)
 -- zieht hoechstens einen Tunnel von einem ueberlasteten Server (15 min ueber 70 %) auf einen freien (unter 40 %) um.
 
--- Kapazitaet je Server in Mbit/s (Bezug fuer 70 % / 40 %; 0 = nie Lastausgleich fuer diesen Server).
-ALTER TABLE `cdn64o_edges` ADD COLUMN IF NOT EXISTS `capacity_mbit` int(6) NOT NULL DEFAULT 1000 AFTER `location`;
+-- Kapazitaet je Server in Mbit/s (Bezug fuer 70 % / 40 %; 0 = nie Lastausgleich fuer diesen Server). srv07 bis srv10
+-- haben je 2000 Mbit/s (Dennis, 2026-11-02); auch neue Server bekommen 2000, sonst von Hand setzen.
+ALTER TABLE `cdn64o_edges` ADD COLUMN IF NOT EXISTS `capacity_mbit` int(6) NOT NULL DEFAULT 2000 AFTER `location`;
+ALTER TABLE `cdn64o_edges` ALTER COLUMN `capacity_mbit` SET DEFAULT 2000;
+UPDATE `cdn64o_edges` SET `capacity_mbit` = 2000 WHERE `capacity_mbit` = 1000 AND `name` IN ('srv07', 'srv08', 'srv09', 'srv10');
 
 -- Last je Server und Minute (Verlauf 2 Stunden): Durchsatz, Tunnel-Verbindungen, Durchsatz je Tunnel (JSON id => Mbit/s).
 CREATE TABLE IF NOT EXISTS `cdn64o_edge_load` (
