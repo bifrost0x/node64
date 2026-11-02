@@ -86,7 +86,7 @@ foreach(array_keys($hot) as $hid) {
 	$cands = array();
 	foreach($edges as $e) {
 		$id = (int)$e['id'];
-		if($id === $hid OR $cap($e) <= 0 OR $avg($id) >= C64B_LOW * $cap($e) OR $locked($id)) { continue; }
+		if($id === $hid OR $cap($e) <= 0 OR ($load[$id]['n'] ?? 0) < C64B_SAMPLES OR $avg($id) >= C64B_LOW * $cap($e) OR $locked($id)) { continue; } // Last unbekannt: kein Ziel
 		$cands[] = $e;
 	}
 	usort($cands, fn($a, $b) => array((int)(($a['location'] ?? '') !== ($h['location'] ?? '')), $avg((int)$a['id']) / $cap($a))

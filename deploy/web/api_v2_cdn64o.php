@@ -680,8 +680,13 @@ function c64o_load_record(array $e, array $tunnels, array $hostBytes): void {
 	try {
 		$last = q1("SELECT at FROM cdn64o_edge_load WHERE edge_id = :e ORDER BY at DESC LIMIT 1", array('e' => $e['id']));
 		$secs = $last ? max(30, min(300, time() - strtotime($last['at']))) : 60;
-		$first = array();
-		foreach(qa("SELECT host_id, tunnel_id FROM cdn64o_host_tunnels ORDER BY host_id, priority, tunnel_id") as $r) { $first[(int)$r['host_id']] ??= $r['tunnel_id']; }
+		$up = array(); // an diesem Server verbundene Tunnel (aus der Meldung)
+		foreach($tunnels as $t) { if(is_array($t) AND isset($t['id'])) { $up[(string)$t['id']] = true; } }
+		$first = array(); // je Name: der erste verbundene Tunnel nach Prioritaet, sonst der erste
+		foreach(qa("SELECT host_id, tunnel_id FROM cdn64o_host_tunnels ORDER BY host_id, priority, tunnel_id") as $r) {
+			$hid = (int)$r['host_id'];
+			if(!isset($first[$hid]) OR (isset($up[$r['tunnel_id']]) AND !isset($up[$first[$hid]]))) { $first[$hid] = $r['tunnel_id']; }
+		}
 		$mbit = fn($by) => round($by * 8 / $secs / 1000000, 2);
 		$sum = 0; $tun = array();
 		foreach($hostBytes as $hid => $by) {
@@ -726,13 +731,15 @@ function c64o_balance_step(): void {
 		$added = q("INSERT IGNORE INTO cdn64o_edge_assign (owner, edge_id) VALUES (:o, :e)", $p + array('e' => $b['to_edge']))->rowCount() > 0;
 		$seen = q1("SELECT seen_at FROM cdn64o_tunnel_seen WHERE tunnel_id = :t AND edge_id = :e AND seen_at >= :s",
 			array('t' => $b['tunnel_id'], 'e' => $b['to_edge'], 's' => $b['started_at']));
+		// Zustand zuerst wechseln (nur wer ihn wechselt, macht weiter): mehrere Server rufen edge/config gleichzeitig ab
+		$fin = fn($st) => q("UPDATE cdn64o_balance set state = :s, done_at = NOW() WHERE id = :i AND state = 'moving'", array('s' => $st, 'i' => $b['id']))->rowCount() === 1;
 		if($seen !== null) {
+			if(!$fin('done')) { continue; }
 			q("DELETE FROM cdn64o_edge_assign WHERE owner = :o AND edge_id = :e", $p + array('e' => $b['from_edge']));
-			q("UPDATE cdn64o_balance set state = 'done', done_at = NOW() WHERE id = :i", array('i' => $b['id']));
 			$msg = "Lastausgleich: $from → $to";
 		} elseif(strtotime($b['started_at']) <= time() - 600) {
+			if(!$fin('aborted')) { continue; }
 			q("DELETE FROM cdn64o_edge_assign WHERE owner = :o AND edge_id = :e", $p + array('e' => $b['to_edge']));
-			q("UPDATE cdn64o_balance set state = 'aborted', done_at = NOW() WHERE id = :i", array('i' => $b['id']));
 			$msg = "Lastausgleich abgebrochen: $to meldet den Tunnel nicht, bleibt auf $from";
 		} elseif($added) {
 			$msg = "Lastausgleich: $to kommt dazu, $from bleibt bis zur Verbindung";
