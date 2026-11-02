@@ -23,6 +23,7 @@ const HPC_JOBS = array(
 	'unlock'  => array('*/5', '*',    'limits_unlock.php',                 '', null), // Limits nach Klassenaenderung freigeben
 	'weekly'  => array('5', '*',      '../weekly_report/cron.php',         '', null), // Wochenbericht, verteilt ueber die Woche (6–21 Uhr)
 	'cdn64old' => array('23', '*',    'cdn64_orphans.php',                 '', null), // CDN64: Tunnel 14 Tage ohne Verbindung entfernen
+	'cdn64bal' => array('*/15', '*',  'cdn64_balance.php',                 '', null), // CDN64: Lastausgleich der Server (Notbremse)
 	'live'    => array('*/2', '*',    'honeypot_live.php',                 '', null), // Live-Karte: honeypot/live.json (letzte Stunde)
 	'hc2fix'  => array('*/10', '*',   'hc2_single_repair.php',             '', null), // Docker/Proxmox nie online: zurueck auf ihre Node
 	// Sonar64 pausiert (Dennis, 2026-10-28): Jobs aus, zum Fortsetzen die fuenf Zeilen wieder einkommentieren
